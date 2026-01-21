@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-01-18T15:10:33.635642",
+  "source": "booking.com",
+  "location": "Doha, Qatar",
+  "hotels": [
+    {
+      "hotel_name": "فندق جراند حياة الدوحة",
+      "found_name": null,
+      "price": null,
+      "currency": null,
+      "url": null,
+      "timestamp": "2026-01-18T15:13:47.194526",
+      "error": "Hotel not found or price unavailable"
+    }
+  ]
+}

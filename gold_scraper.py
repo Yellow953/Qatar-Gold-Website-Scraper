@@ -167,84 +167,127 @@ class GoldPriceScraper:
         print("="*60)
     
     def export_to_excel(self, prices: Dict, filename: str = 'gold_prices.xlsx'):
-        """Export gold prices to Excel file in table format"""
+        """Export gold prices to Excel file in RTL (right-to-left) table format"""
         if 'error' in prices:
             print(f"Error: Cannot export - {prices['error']}")
             return False
         
         # Create or load workbook
+        karat_col = 1  # Column A contains karat labels (appears rightmost in RTL view)
+        day_name_row = 1  # Row 1: Arabic day names
+        date_row = 2  # Row 2: Day number and month, and "نوع العيار" header
+        
         if os.path.exists(filename):
             wb = load_workbook(filename)
             ws = wb.active
-            # Find the last data column (skip column A which has karat labels)
+            # Ensure RTL is set
+            ws.sheet_view.rightToLeft = True
+            # Find the last date column (columns after A are dates)
             max_col = ws.max_column
-            if max_col < 2:
+            if max_col < 1:
                 max_col = 1
         else:
             wb = Workbook()
             ws = wb.active
             ws.title = "Gold Prices"
             
-            # Create header row with title (merge cells for title)
-            max_title_cols = 8  # Start with space for 7 dates + 1 label column
-            ws.merge_cells(f'A1:{get_column_letter(max_title_cols)}1')
-            title_cell = ws['A1']
-            title_cell.value = 'الذهب 2025'  # Gold 2025 in Arabic
-            title_cell.font = Font(size=14, bold=True, color='FFFFFF')
-            title_cell.fill = PatternFill(start_color='006400', end_color='006400', fill_type='solid')  # Green
-            title_cell.alignment = Alignment(horizontal='center', vertical='center')
+            # Set sheet to RTL (right-to-left) direction
+            ws.sheet_view.rightToLeft = True
             
-            # Initialize karat labels in column A
+            # Initialize karat labels in column A (rightmost in RTL view)
+            # Rows 3-7 for karat labels (14, 18, 21, 22, 24)
             karat_row_map = {14: 3, 18: 4, 21: 5, 22: 6, 24: 7}
-            karat_labels = {14: '14K', 18: '18K', 21: '21K', 22: '22K', 24: '24K'}
+            karat_labels = {14: '14', 18: '18', 21: '21', 22: '22', 24: '24'}
             
+            # Place karat labels in column A
             for karat, row_num in karat_row_map.items():
-                label_cell = ws.cell(row=row_num, column=1)
+                label_cell = ws.cell(row=row_num, column=karat_col)
                 label_cell.value = karat_labels[karat]
                 label_cell.font = Font(bold=True)
-                label_cell.alignment = Alignment(horizontal='center')
+                label_cell.alignment = Alignment(horizontal='center', vertical='center')
+                # Light orange/peach background for karat labels
+                label_cell.fill = PatternFill(start_color='FFE4B5', end_color='FFE4B5', fill_type='solid')
+                # Special styling for 22K (red text)
+                if karat == 22:
+                    label_cell.font = Font(bold=True, color='FF0000')
             
-            max_col = 1  # Start with column A (labels)
+            # Add "نوع العيار" header in row 2, column A (same row as date headers)
+            header_label_cell = ws.cell(row=date_row, column=karat_col)
+            header_label_cell.value = 'نوع العيار'  # Type of Karat
+            header_label_cell.font = Font(bold=True)
+            header_label_cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # Yellow
+            header_label_cell.alignment = Alignment(horizontal='center', vertical='center')
+            
+            max_col = 1  # Start with one column (karat labels)
         
         # Get today's date
         today = datetime.now()
         date_str = today.strftime('%Y-%m-%d')
         day_name_ar = self._get_arabic_day_name(today.weekday())
         month_name_ar = self._get_arabic_month_name(today.month)
-        header_text = f'{day_name_ar} {month_name_ar} {today.day}'
+        day_name_text = day_name_ar  # Row 1: Just the day name
+        date_text = f'{month_name_ar} {today.day}'  # Row 2: Month and day number
         
-        # Find or create date header row (row 2)
-        header_row = 2
-        
-        # Check if today's date column already exists (start from column B, skip column A)
+        # Check if today's date column already exists
+        # Dates are in columns B, C, D... (after column A which has karat labels)
         date_col = None
-        for col in range(2, max_col + 2):
-            cell_value = ws.cell(row=header_row, column=col).value
-            if cell_value and (date_str in str(cell_value) or header_text in str(cell_value)):
+        for col in range(2, max_col + 2):  # Start from column B (skip column A)
+            # Check row 2 (date row) for matching date
+            cell_value = ws.cell(row=date_row, column=col).value
+            if cell_value and (date_str in str(cell_value) or date_text in str(cell_value)):
                 date_col = col
                 break
         
-        # If date doesn't exist, add new column
+        # If date doesn't exist, add new column after the last date column
         if date_col is None:
-            date_col = max_col + 1
-            ws.cell(row=header_row, column=date_col).value = header_text
+            # Find the last date column (last column that's not A)
+            last_date_col = max_col
+            if last_date_col < 2:
+                last_date_col = 1
+            date_col = last_date_col + 1
         
-        # Style the header cell
-        header_cell = ws.cell(row=header_row, column=date_col)
-        header_cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # Yellow
-        header_cell.font = Font(bold=True)
-        header_cell.alignment = Alignment(horizontal='center', vertical='center')
+        # Set row 1: Arabic day name
+        day_name_cell = ws.cell(row=day_name_row, column=date_col)
+        day_name_cell.value = day_name_text
+        day_name_cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # Yellow
+        day_name_cell.font = Font(bold=True)
+        day_name_cell.alignment = Alignment(horizontal='center', vertical='center')
         
-        # Add price data rows
-        # Row mapping: 14K=row 3, 18K=row 4, 21K=row 5, 22K=row 6, 24K=row 7
+        # Set row 2: Month and day number
+        date_cell = ws.cell(row=date_row, column=date_col)
+        date_cell.value = date_text
+        date_cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # Yellow
+        date_cell.font = Font(bold=True)
+        date_cell.alignment = Alignment(horizontal='center', vertical='center')
+        
+        # Ensure karat labels are in column A (rows 3-7)
         karat_row_map = {14: 3, 18: 4, 21: 5, 22: 6, 24: 7}
+        karat_labels = {14: '14', 18: '18', 21: '21', 22: '22', 24: '24'}
+        
+        for karat, row_num in karat_row_map.items():
+            label_cell = ws.cell(row=row_num, column=karat_col)
+            if label_cell.value is None:
+                label_cell.value = karat_labels[karat]
+            label_cell.font = Font(bold=True)
+            label_cell.alignment = Alignment(horizontal='center', vertical='center')
+            label_cell.fill = PatternFill(start_color='FFE4B5', end_color='FFE4B5', fill_type='solid')
+            if karat == 22:
+                label_cell.font = Font(bold=True, color='FF0000')
+        
+        # Ensure "نوع العيار" header is in column A, row 2 (same row as date headers)
+        header_label_cell = ws.cell(row=date_row, column=karat_col)
+        if header_label_cell.value is None or header_label_cell.value != 'نوع العيار':
+            header_label_cell.value = 'نوع العيار'
+        header_label_cell.font = Font(bold=True)
+        header_label_cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+        header_label_cell.alignment = Alignment(horizontal='center', vertical='center')
         
         # Ensure we have enough rows
         for row_num in range(3, 8):
             if ws.max_row < row_num:
-                ws.append([None] * (date_col))
+                ws.append([None] * ws.max_column)
         
-        # Write prices to appropriate rows
+        # Write prices to appropriate rows (rows 3-7)
         for karat_key, price_info in prices.get('prices', {}).items():
             karat = price_info['karat']
             if karat in karat_row_map:
@@ -254,32 +297,19 @@ class GoldPriceScraper:
                 price_cell = ws.cell(row=row_num, column=date_col)
                 price_cell.value = price
                 price_cell.number_format = '0.00'
-                price_cell.alignment = Alignment(horizontal='center')
+                price_cell.alignment = Alignment(horizontal='center', vertical='center')
         
         # Auto-adjust column widths
-        ws.column_dimensions['A'].width = 10  # Label column
+        ws.column_dimensions['A'].width = 12  # Karat label column
         for col in range(2, date_col + 1):
             ws.column_dimensions[get_column_letter(col)].width = 18
         
-        # Update title merge if needed
-        if date_col > max_col:
-            # Update merged title cells
-            title_range = f'A1:{get_column_letter(date_col)}1'
-            # Unmerge old range if exists
-            for merged_range in list(ws.merged_cells.ranges):
-                if merged_range.min_row == 1 and merged_range.min_col == 1:
-                    ws.unmerge_cells(str(merged_range))
-            # Merge new range
-            ws.merge_cells(title_range)
-            title_cell = ws['A1']
-            title_cell.value = 'الذهب 2025'
-            title_cell.font = Font(size=14, bold=True, color='FFFFFF')
-            title_cell.fill = PatternFill(start_color='006400', end_color='006400', fill_type='solid')
-            title_cell.alignment = Alignment(horizontal='center', vertical='center')
+        # Ensure RTL is set
+        ws.sheet_view.rightToLeft = True
         
         # Save workbook
         wb.save(filename)
-        print(f"\nPrices exported to {filename}")
+        print(f"\nPrices exported to {filename} (RTL layout)")
         return True
     
     def _get_arabic_day_name(self, weekday: int) -> str:
