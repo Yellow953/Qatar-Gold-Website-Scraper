@@ -10,6 +10,9 @@ Extracts gold prices from [qatar-goldprice.com](https://qatar-goldprice.com/).
 ### 2. Hotel Price Scraper
 Extracts hotel prices from [booking.com](https://www.booking.com) for hotels in Doha, Qatar.
 
+### 3. Flight Price Scraper
+Extracts flight ticket prices from multiple airlines and travel websites for weekly price tracking.
+
 ## Features
 
 ### Gold Price Scraper
@@ -25,6 +28,15 @@ Extracts hotel prices from [booking.com](https://www.booking.com) for hotels in 
 - Uses Selenium for dynamic content scraping
 - Saves results to JSON file
 - Exports data to Excel file with weekly tracking
+- Tracks prices weekly (adds new week columns to Excel)
+
+### Flight Price Scraper
+- Scrapes flight prices from multiple airlines and travel aggregators
+- Tracks routes (e.g., Doha-London-Doha, Doha-Cairo-Doha)
+- Filters for non-stop flights, Economy class, Flexible/Semi-flexible tickets
+- Uses Selenium for dynamic content scraping
+- Saves results to JSON file
+- Exports data to Excel file with weekly tracking matching the required format
 - Tracks prices weekly (adds new week columns to Excel)
 
 ## Setup
@@ -212,3 +224,82 @@ The Excel file (`hotel_prices.xlsx`) is formatted as a right-to-left (RTL) table
 - Some hotels may not be found if names don't match exactly
 - Prices are for a default date (7 days from today, 1 night stay, 2 adults)
 - You may need to adjust search parameters in the code for better results
+
+## Flight Price Scraper
+
+### Usage
+
+Run the flight scraper:
+
+```bash
+python flight_scraper.py
+```
+
+The script will:
+1. Search for flights on multiple airlines and travel websites
+2. Extract current prices for defined routes
+3. Display results in terminal
+4. Save results to `flight_prices.json`
+5. Export data to `flight_prices.xlsx` (Excel format) with weekly tracking
+
+### Weekly Automatic Run
+
+To run the scraper automatically every week:
+
+```bash
+python flight_scheduler.py
+```
+
+This will run the scraper weekly on Monday at 9:00 AM.
+
+### Excel Output Format
+
+The Excel file (`flight_prices.xlsx`) is formatted as a right-to-left (RTL) table matching the required format with:
+- **Column A**: Code (route identifier)
+- **Column B**: Commodity (Arabic description of route and ticket type)
+- **Column C**: Class (Economy)
+- **Column D**: CPI-Flag (Y for individual sources, N-averages for averages)
+- **Column E**: Source Code (e.g., AIRL001, AIRL018)
+- **Column F**: Flight Agencies (airline/aggregator name in Arabic)
+- **Columns 7+**: Weekly date columns (e.g., 3-Jan, 10-Jan, 17-Jan) with prices
+
+The scraper tracks:
+- Individual prices from each source
+- Average prices grouped by airline
+- Multiple routes (configurable in the code)
+
+### Supported Airlines and Travel Websites
+
+The scraper supports the following sources:
+
+**Airlines:**
+- Qatar Airways
+- British Airways
+- Malaysia Airlines
+- Kuwait Airways
+- Turkish Airlines
+- Pakistan International Airlines (PIA)
+
+**Travel Aggregators:**
+- CheapAir
+- eDreams
+- KAYAK
+- ITA Matrix
+
+### Scraping Criteria
+
+The scraper follows these criteria for data collection:
+- **Same airline for consistency**: Prices are collected from the same airline when possible
+- **Non-stop flights only**: Only direct flights are selected
+- **Economy Class**: Only Economy Class fares are considered
+- **Flexible/Semi-Flexible tickets**: Only flexible and semi-flexible ticket options are used
+- **Weekly collection**: Data is collected on a weekly basis
+
+### Notes
+
+- Flight scraping is complex and each website has different structures
+- The current implementation provides a framework that can be extended for each airline/website
+- Some airlines may require specific implementations based on their website structure
+- Anti-scraping measures may affect results - delays are included between requests
+- Website structures may change over time, requiring updates to the parsing logic
+- You may need to customize the scraping methods for each airline based on their specific website structure
