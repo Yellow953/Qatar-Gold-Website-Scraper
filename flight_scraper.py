@@ -61,7 +61,7 @@ import base64
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import os
 import requests
@@ -931,8 +931,18 @@ class FlightPriceScraper:
         
         return results
     
+    def _apply_border(self, cell):
+        """Apply thin border to a cell"""
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        cell.border = thin_border
+    
     def export_to_excel(self, results: Dict, filename: str = 'flight_prices.xlsx'):
-        """Export flight prices to Excel file matching the screenshot format"""
+        """Export flight prices to Excel file matching the screenshot format exactly"""
         print(f"\n{'='*60}")
         print("EXPORTING TO EXCEL")
         print(f"{'='*60}")
@@ -969,19 +979,26 @@ class FlightPriceScraper:
                 'وكالات الخطوط (Flight Agencies)'
             ]
             
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            
             for col_idx, header in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col_idx)
                 cell.value = header
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
                 cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = thin_border
             
             max_col = 6  # 6 header columns
             print(f"  Created headers in {max_col} columns")
         
         # Get current week date
         today = datetime.now()
-        week_start = today - timedelta(days=today.weekday())
         date_text = today.strftime('%d-%b')  # Format: 3-Jan, 10-Jan, etc.
         print(f"  Date column: {date_text}")
         
@@ -996,13 +1013,35 @@ class FlightPriceScraper:
         
         if date_col is None:
             date_col = max_col + 1
-            # Add date header
+            # Add date header with border
+            thin_border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
             date_cell = ws.cell(row=1, column=date_col)
             date_cell.value = date_text
             date_cell.font = Font(bold=True)
             date_cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
             date_cell.alignment = Alignment(horizontal='center', vertical='center')
+            date_cell.border = thin_border
             print(f"  Created new date column at column {date_col}")
+        
+        # Ensure header row has yellow fill on ALL columns (1 through date_col)
+        header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        for col in range(1, date_col + 1):
+            header_cell = ws.cell(row=1, column=col)
+            header_cell.fill = header_fill
+            header_cell.font = Font(bold=True)
+            header_cell.border = thin_border
+            header_cell.alignment = Alignment(horizontal='center', vertical='center')
         
         # Find the next available row (if file exists, find last row with data)
         if file_exists:
@@ -1018,97 +1057,282 @@ class FlightPriceScraper:
         initial_row = row
         total_prices_written = 0
         
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Light orange/peach color for averages (similar to screenshot)
+        avg_fill = PatternFill(start_color='FFE4B5', end_color='FFE4B5', fill_type='solid')
+        
         # Process each route
         for route_result in results.get('routes', []):
             route = route_result['route']
             prices = route_result.get('prices', [])
             print(f"  Processing route {route['code']}: {len(prices)} prices found")
             
-            # Group prices by source for averaging
-            source_groups = {}
-            for price_data in prices:
-                source_key = price_data.get('source', 'Unknown')
-                if source_key not in source_groups:
-                    source_groups[source_key] = []
-                source_groups[source_key].append(price_data)
+            route_start_row = row  # Track where this route starts for merging
             
-            # Write individual source prices
-            for source_name, price_list in source_groups.items():
-                for price_data in price_list:
-                    # Code
-                    ws.cell(row=row, column=1).value = route['code']
-                    
-                    # Commodity (Arabic)
-                    ws.cell(row=row, column=2).value = route['commodity_ar']
-                    
-                    # Class
-                    ws.cell(row=row, column=3).value = 'Economy'
-                    
-                    # CPI-Flag (Y for individual sources, N for averages)
-                    ws.cell(row=row, column=4).value = 'Y'
-                    
-                    # Source Code
-                    ws.cell(row=row, column=5).value = price_data.get('source_code', '')
-                    
-                    # Flight Agencies
-                    agency_name = price_data.get('source_ar', price_data.get('source', ''))
-                    airline = price_data.get('airline', '')
-                    if airline and airline != 'Various':
-                        ws.cell(row=row, column=6).value = f"عبر {airline} {agency_name}"
-                    else:
-                        ws.cell(row=row, column=6).value = agency_name
-                    
-                    # Price
-                    price = price_data.get('price')
-                    if price:
-                        ws.cell(row=row, column=date_col).value = price
-                        ws.cell(row=row, column=date_col).number_format = '0'
-                        total_prices_written += 1
-                    
-                    row += 1
-            
-            # Calculate and add averages for each airline group
-            airline_groups = {}
+            # Group prices by airline for proper averaging
+            airline_price_map = {}
             for price_data in prices:
                 airline = price_data.get('airline', 'Various')
-                if airline not in airline_groups:
-                    airline_groups[airline] = []
-                airline_groups[airline].append(price_data.get('price'))
+                if airline not in airline_price_map:
+                    airline_price_map[airline] = []
+                airline_price_map[airline].append(price_data)
             
-            for airline, price_list in airline_groups.items():
-                valid_prices = [p for p in price_list if p and p > 0]
-                if len(valid_prices) > 1:  # Only average if multiple sources
-                    avg_price = sum(valid_prices) / len(valid_prices)
+            # Write individual source prices
+            # Sort by airline first, then by source
+            sorted_prices = sorted(prices, key=lambda x: (
+                x.get('airline', 'Various'),
+                x.get('source', '')
+            ))
+            
+            for price_data in sorted_prices:
+                # Code
+                cell = ws.cell(row=row, column=1)
+                cell.value = route['code']
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # Commodity (will be merged later)
+                cell = ws.cell(row=row, column=2)
+                cell.value = route['commodity_ar']
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
+                
+                # Class
+                cell = ws.cell(row=row, column=3)
+                cell.value = 'Economy'
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # CPI-Flag
+                cell = ws.cell(row=row, column=4)
+                cell.value = 'Y'
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # Source Code
+                cell = ws.cell(row=row, column=5)
+                cell.value = price_data.get('source_code', '')
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # Flight Agencies
+                cell = ws.cell(row=row, column=6)
+                agency_name = price_data.get('source_ar', price_data.get('source', ''))
+                airline_name = price_data.get('airline', '')
+                source_name = price_data.get('source', '')
+                
+                # Format agency name based on source type
+                if airline_name and airline_name != 'Various':
+                    # For aggregators showing specific airline prices
+                    if source_name in ['KAYAK', 'eDreams', 'CheapAir', 'ITA Matrix']:
+                        # Format: "Kayak عبر الخطوط العمانية" or "matrix عبر الخطوط العمانية"
+                        if source_name == 'KAYAK':
+                            cell.value = f"Kayak عبر {airline_name}"
+                        elif source_name == 'ITA Matrix':
+                            cell.value = f"matrix عبر {airline_name}"
+                        else:
+                            cell.value = f"{agency_name} عبر {airline_name}"
+                    else:
+                        # Direct airline booking
+                        cell.value = agency_name
+                else:
+                    # Aggregator without specific airline
+                    cell.value = agency_name
+                
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='right', vertical='center')
+                
+                # Price
+                price = price_data.get('price')
+                cell = ws.cell(row=row, column=date_col)
+                if price:
+                    cell.value = price
+                    cell.number_format = '0'
+                    total_prices_written += 1
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                row += 1
+            
+            # Calculate and add averages for each airline group
+            # Group by airline name (not 'Various')
+            airline_avg_groups = {}
+            for price_data in prices:
+                airline = price_data.get('airline', 'Various')
+                if airline != 'Various':
+                    if airline not in airline_avg_groups:
+                        airline_avg_groups[airline] = []
+                    price = price_data.get('price')
+                    if price and price > 0:
+                        airline_avg_groups[airline].append(price)
+            
+            # Write averages for airlines with multiple prices
+            for airline, price_list in airline_avg_groups.items():
+                if len(price_list) > 1:  # Only average if multiple sources
+                    avg_price = sum(price_list) / len(price_list)
                     
                     # Code
-                    ws.cell(row=row, column=1).value = route['code']
+                    cell = ws.cell(row=row, column=1)
+                    cell.value = route['code']
+                    cell.border = thin_border
+                    cell.fill = avg_fill
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
                     
-                    # Commodity
-                    ws.cell(row=row, column=2).value = route['commodity_ar']
+                    # Commodity (will be merged)
+                    cell = ws.cell(row=row, column=2)
+                    cell.value = route['commodity_ar']
+                    cell.border = thin_border
+                    cell.fill = avg_fill
+                    cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
                     
                     # Class
-                    ws.cell(row=row, column=3).value = 'Economy'
+                    cell = ws.cell(row=row, column=3)
+                    cell.value = 'Economy'
+                    cell.border = thin_border
+                    cell.fill = avg_fill
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
                     
-                    # CPI-Flag (N for averages)
-                    ws.cell(row=row, column=4).value = 'N-averages'
+                    # CPI-Flag (N-averages or Y-averages)
+                    cell = ws.cell(row=row, column=4)
+                    cell.value = 'N-averages'
+                    cell.border = thin_border
+                    cell.fill = avg_fill
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
                     
-                    # Source Code
-                    ws.cell(row=row, column=5).value = ''
+                    # Source Code (empty for averages)
+                    cell = ws.cell(row=row, column=5)
+                    cell.value = ''
+                    cell.border = thin_border
+                    cell.fill = avg_fill
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
                     
-                    # Flight Agencies (Average)
-                    if airline and airline != 'Various':
-                        ws.cell(row=row, column=6).value = f"متوسط المصادر للخطوط {airline}"
-                    else:
-                        ws.cell(row=row, column=6).value = "متوسط المصادر"
+                    # Flight Agencies (Average) - format: "متوسط المصادر للخطوط [Airline]"
+                    cell = ws.cell(row=row, column=6)
+                    # Get Arabic airline name if available
+                    airline_ar_map = {
+                        'Qatar Airways': 'القطرية',
+                        'British Airways': 'البريطانية',
+                        'Malaysia Airlines': 'الماليزية',
+                        'Kuwait Airways': 'الكويتية',
+                        'Turkish Airlines': 'التركية',
+                        'Pakistan International Airlines': 'الباكستانية',
+                        'PIA': 'الباكستانية'
+                    }
+                    airline_ar = airline_ar_map.get(airline, airline)
+                    cell.value = f"متوسط المصادر للخطوط {airline_ar}"
+                    cell.border = thin_border
+                    cell.fill = avg_fill
+                    cell.alignment = Alignment(horizontal='right', vertical='center')
                     
-                    # Average Price
-                    price_cell = ws.cell(row=row, column=date_col)
-                    price_cell.value = round(avg_price)
-                    price_cell.number_format = '0'
-                    price_cell.font = Font(bold=True)
+                    # Average Price (bold)
+                    cell = ws.cell(row=row, column=date_col)
+                    cell.value = round(avg_price)
+                    cell.number_format = '0'
+                    cell.font = Font(bold=True)
+                    cell.border = thin_border
+                    cell.fill = avg_fill
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
                     total_prices_written += 1
                     
+                    # Fill any columns between 7 and date_col for consistent row fill
+                    for c in range(7, date_col):
+                        fill_cell = ws.cell(row=row, column=c)
+                        fill_cell.fill = avg_fill
+                        fill_cell.border = thin_border
+                    
                     row += 1
+            
+            # Add overall average row for ALL prices at the end of each route
+            all_valid_prices = [p.get('price') for p in prices if p.get('price') and p.get('price') > 0]
+            if len(all_valid_prices) > 0:
+                overall_avg = sum(all_valid_prices) / len(all_valid_prices)
+                
+                # Code
+                cell = ws.cell(row=row, column=1)
+                cell.value = route['code']
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # Commodity (will be merged)
+                cell = ws.cell(row=row, column=2)
+                cell.value = route['commodity_ar']
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
+                
+                # Class
+                cell = ws.cell(row=row, column=3)
+                cell.value = 'Economy'
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # CPI-Flag (Y-averages for overall average)
+                cell = ws.cell(row=row, column=4)
+                cell.value = 'Y-averages'
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # Source Code (empty for averages)
+                cell = ws.cell(row=row, column=5)
+                cell.value = ''
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # Flight Agencies (Overall Average)
+                cell = ws.cell(row=row, column=6)
+                cell.value = "متوسط المصادر"  # Average of all sources
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='right', vertical='center')
+                
+                # Overall Average Price (bold)
+                cell = ws.cell(row=row, column=date_col)
+                cell.value = round(overall_avg)
+                cell.number_format = '0'
+                cell.font = Font(bold=True)
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                total_prices_written += 1
+                
+                # Fill any columns between 7 and date_col for consistent row fill
+                for c in range(7, date_col):
+                    fill_cell = ws.cell(row=row, column=c)
+                    fill_cell.fill = avg_fill
+                    fill_cell.border = thin_border
+                
+                row += 1
+            
+            # Merge commodity cells for this route (including average rows)
+            route_end_row = row - 1
+            if route_end_row >= route_start_row:
+                try:
+                    # Unmerge any existing merged cells in this range first
+                    for merged_range in list(ws.merged_cells.ranges):
+                        if merged_range.min_col == 2 and merged_range.max_col == 2:
+                            if merged_range.min_row <= route_start_row <= merged_range.max_row:
+                                ws.unmerge_cells(str(merged_range))
+                    
+                    # Merge commodity column for this route
+                    if route_end_row > route_start_row:
+                        ws.merge_cells(f'B{route_start_row}:B{route_end_row}')
+                    # Set alignment for merged cell
+                    merged_cell = ws.cell(row=route_start_row, column=2)
+                    merged_cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
+                    print(f"    Merged commodity cells from row {route_start_row} to {route_end_row}")
+                except Exception as e:
+                    print(f"    Warning: Could not merge commodity cells: {e}")
+                    pass  # If merge fails, continue
         
         # Auto-adjust column widths
         ws.column_dimensions['A'].width = 12  # Code
@@ -1116,7 +1340,7 @@ class FlightPriceScraper:
         ws.column_dimensions['C'].width = 25  # Class
         ws.column_dimensions['D'].width = 12  # CPI-Flag
         ws.column_dimensions['E'].width = 15  # Source Code
-        ws.column_dimensions['F'].width = 30  # Flight Agencies
+        ws.column_dimensions['F'].width = 35  # Flight Agencies
         
         for col in range(7, date_col + 1):
             ws.column_dimensions[get_column_letter(col)].width = 15
