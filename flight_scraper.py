@@ -303,18 +303,21 @@ class FlightPriceScraper:
             print(f"    Scraping Qatar Airways for {route['origin']}-{route['destination']}")
             dep_date, ret_date = self._calculate_dates(route['duration_months'])
             
-            # Direct URL with search parameters
+            # Direct URL with search parameters (direct/non-stop flights only)
             url = (f"https://www.qatarairways.com/app/booking/flight-selection?"
                    f"widget=QR&searchType=F&addTaxToFare=Y&minPurTime=0&selLang=en&"
                    f"tripType=R&fromStation={route['origin_code']}&toStation={route['destination_code']}&"
                    f"departing={dep_date}&returning={ret_date}&bookingClass=E&"
-                   f"adults=1&children=0&infants=0&ofw=0&teenager=0&flexibleDate=off&allowRedemption=N")
+                   f"adults=1&children=0&infants=0&ofw=0&teenager=0&flexibleDate=off&allowRedemption=N&stops=0")
             
-            print(f"      Opening URL: {url[:100]}...")
+            print(f"      Opening URL (direct flights only): {url[:100]}...")
             self.driver.get(url)
             time.sleep(10)
             
             self._close_dialogs()
+            
+            # Try to apply direct flights filter on results if available
+            self._apply_direct_flights_filter()
             
             # Wait for results to load
             time.sleep(5)
@@ -354,17 +357,20 @@ class FlightPriceScraper:
             print(f"    Scraping British Airways for {route['origin']}-{route['destination']}")
             dep_date, ret_date = self._calculate_dates(route['duration_months'])
             
-            # Direct URL with search parameters
+            # Direct URL with search parameters (direct/non-stop flights only)
             url = (f"https://www.britishairways.com/nx/b/airselect/en/usa/book/search?"
                    f"trip=round&arrivalDate={ret_date}&departureDate={dep_date}&"
                    f"from={route['origin_code']}&to={route['destination_code']}&"
-                   f"travelClass=economy&adults=1&youngAdults=0&children=0&infants=0&bound=outbound")
+                   f"travelClass=economy&adults=1&youngAdults=0&children=0&infants=0&bound=outbound&stops=0")
             
-            print(f"      Opening URL: {url[:100]}...")
+            print(f"      Opening URL (direct flights only): {url[:100]}...")
             self.driver.get(url)
             time.sleep(10)
             
             self._close_dialogs()
+            
+            # Try to apply direct flights filter on results if available
+            self._apply_direct_flights_filter()
             
             # Wait for results
             time.sleep(5)
@@ -578,14 +584,17 @@ class FlightPriceScraper:
         """Scrape prices from KAYAK"""
         try:
             dep_date, ret_date = self._calculate_dates(route['duration_months'])
-            # KAYAK URL format with sort parameter
-            url = f"https://www.kayak.ae/flights/{route['origin_code']}-{route['destination_code']}/{dep_date}/{ret_date}?ucs=bzx8kr&sort=bestflight_a"
+            # KAYAK URL format: fs=stops=0 for direct/non-stop flights only
+            url = f"https://www.kayak.ae/flights/{route['origin_code']}-{route['destination_code']}/{dep_date}/{ret_date}?ucs=bzx8kr&sort=bestflight_a&fs=stops=0"
             
-            print(f"      Opening URL: {url[:100]}...")
+            print(f"      Opening URL (direct flights only): {url[:100]}...")
             self.driver.get(url)
             time.sleep(10)
             
             self._close_dialogs()
+            
+            # Try to apply "Direct flights only" filter if not in URL
+            self._apply_direct_flights_filter()
             
             # Wait for results to load - KAYAK may take time
             print(f"      Waiting for results to load...")
@@ -649,17 +658,20 @@ class FlightPriceScraper:
         try:
             dep_date, ret_date = self._calculate_dates(route['duration_months'])
             
-            # eDreams uses hash-based routing
+            # eDreams uses hash-based routing; directOnly=1 for direct flights only
             url = (f"https://www.edreams.qa/travel/#results/"
                    f"type=R;from={route['origin_code']};to={route['destination_code']};"
                    f"dep={dep_date};ret={ret_date};"
-                   f"buyPath=FLIGHTS_HOME_SEARCH_FORM;internalSearch=true")
+                   f"buyPath=FLIGHTS_HOME_SEARCH_FORM;internalSearch=true;directOnly=true")
             
-            print(f"      Opening URL: {url[:100]}...")
+            print(f"      Opening URL (direct flights only): {url[:100]}...")
             self.driver.get(url)
             time.sleep(10)
             
             self._close_dialogs()
+            
+            # Try to click "Direct flights only" if visible (رحلات مباشرة فقط)
+            self._apply_direct_flights_filter()
             
             # Wait for results to load (eDreams may take time)
             time.sleep(8)
@@ -704,14 +716,15 @@ class FlightPriceScraper:
             dep_date_formatted = datetime.strptime(dep_date, '%Y-%m-%d').strftime('%m/%d/%Y')
             ret_date_formatted = datetime.strptime(ret_date, '%Y-%m-%d').strftime('%m/%d/%Y')
             
+            # nonstop=1 for direct flights only
             url = (f"https://www.cheapoair.com/air/listing?"
                    f"&d1={route['origin_code']}&r1={route['destination_code']}&"
                    f"dt1={dep_date_formatted}&dtype1=A&rtype1=C&"
                    f"d2={route['destination_code']}&r2={route['origin_code']}&"
                    f"dt2={ret_date_formatted}&dtype2=C&rtype2=A&"
-                   f"tripType=ROUNDTRIP&cl=ECONOMY&ad=1&se=0&ch=0&infs=0&infl=0")
+                   f"tripType=ROUNDTRIP&cl=ECONOMY&ad=1&se=0&ch=0&infs=0&infl=0&nonstop=1")
             
-            print(f"      Opening URL: {url[:100]}...")
+            print(f"      Opening URL (direct flights only): {url[:100]}...")
             self.driver.get(url)
             time.sleep(10)
             
@@ -772,8 +785,8 @@ class FlightPriceScraper:
                 }],
                 "options": {
                     "cabin": "COACH",
-                    "stops": "-1",  # -1 means non-stop only
-                    "extraStops": "1",
+                    "stops": "-1",   # -1 means non-stop only
+                    "extraStops": "0",  # 0 = no extra stops (direct only)
                     "allowAirportChanges": "true",
                     "showOnlyAvailable": "true"
                 },
@@ -820,6 +833,77 @@ class FlightPriceScraper:
         except Exception as e:
             print(f"    Error in ITA Matrix scraping: {e}")
             return None
+    
+    def _apply_direct_flights_filter(self):
+        """Try to apply 'Direct flights only' / 'Nonstop' filter on the page"""
+        try:
+            # Common labels for direct/non-stop filter (English and Arabic)
+            direct_keywords = [
+                'direct', 'nonstop', 'non-stop', 'non stop',
+                'رحلات مباشرة', 'مباشرة فقط', 'بدون توقف'
+            ]
+            # Selectors for checkboxes, filters, buttons
+            selectors = [
+                "[data-testid*='nonstop']",
+                "[data-testid*='direct']",
+                "[data-test-id*='nonstop']",
+                "[data-test-id*='stops-0']",
+                "input[type='checkbox'][id*='direct']",
+                "input[type='checkbox'][id*='nonstop']",
+                "label:has(input[type='checkbox'])",
+                "[aria-label*='Nonstop']",
+                "[aria-label*='Direct']",
+                "button[class*='stops']",
+                "[class*='nonstop']",
+                "[class*='direct-only']",
+                "a[href*='stops=0']",
+                "a[href*='nonstop']"
+            ]
+            for selector in selectors:
+                try:
+                    elems = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for elem in elems:
+                        try:
+                            text = (elem.text or elem.get_attribute('aria-label') or '').lower()
+                            if any(kw in text for kw in ['direct', 'nonstop', 'non-stop', 'non stop']):
+                                if elem.is_displayed():
+                                    elem.click()
+                                    time.sleep(2)
+                                    print(f"      Applied direct flights filter")
+                                    return
+                        except:
+                            continue
+                    if elems and elems[0].is_displayed():
+                        elems[0].click()
+                        time.sleep(2)
+                        print(f"      Applied direct flights filter")
+                        return
+                except:
+                    continue
+            # Try by link text / partial text
+            try:
+                for kw in ['Nonstop', 'Direct', 'Non-stop', 'رحلات مباشرة']:
+                    try:
+                        link = self.driver.find_element(By.LINK_TEXT, kw)
+                        if link.is_displayed():
+                            link.click()
+                            time.sleep(2)
+                            print(f"      Applied direct flights filter")
+                            return
+                    except:
+                        try:
+                            link = self.driver.find_element(By.PARTIAL_LINK_TEXT, kw)
+                            if link.is_displayed():
+                                link.click()
+                                time.sleep(2)
+                                print(f"      Applied direct flights filter")
+                                return
+                        except:
+                            continue
+            except:
+                pass
+        except Exception as e:
+            pass  # Silently ignore if filter not found
     
     def _close_dialogs(self):
         """Close cookie/consent dialogs"""
