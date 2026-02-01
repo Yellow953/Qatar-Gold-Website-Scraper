@@ -80,8 +80,6 @@ class FlightPriceScraper:
         
     def _get_routes(self) -> List[Dict]:
         """Get list of flight routes to scrape"""
-        # Based on the example: Doha-London-Doha, Doha-Cairo-Doha
-        # Add more routes as needed
         routes = [
             {
                 'code': '007331101',
@@ -102,6 +100,105 @@ class FlightPriceScraper:
                 'destination_code': 'CAI',
                 'commodity_ar': 'كلفة تذكرة دوحة _ القاهرة - دوحة لمدة 6 (semi flexble التذكرة سياحية ( اشهر',
                 'commodity_en': 'Cost of a Doha - Cairo - Doha ticket for 6 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 6
+            },
+            {
+                'code': '007331103',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'Karachi',
+                'destination_code': 'KHI',
+                'commodity_ar': 'كلفة تذكرة دوحة_ كراتشي _ دوحة لمدة 3 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Karachi - Doha ticket for 3 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 3
+            },
+            {
+                'code': '007331104',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'Dubai',
+                'destination_code': 'DXB',
+                'commodity_ar': 'كلفة تذكرة دوحة_ دبي _ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Dubai - Doha ticket for 6 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 6
+            },
+            {
+                'code': '007331105',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'Jeddah',
+                'destination_code': 'JED',
+                'commodity_ar': 'كلفة تذكرة دوحة_جدة _ دوحة لمدة 6 اشهر( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Jeddah - Doha ticket for 6 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 6
+            },
+            {
+                'code': '007331106',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'Mumbai',
+                'destination_code': 'BOM',
+                'commodity_ar': 'كلفة تذكرة دوحة_ بومباي _ دوحة لمدة 3 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Mumbai - Doha ticket for 3 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 3
+            },
+            {
+                'code': '007331107',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'Kuala Lumpur',
+                'destination_code': 'KUL',
+                'commodity_ar': 'كلفة تذكرة دوحة_كولا لمبور _ دوحة لمدة 6 اشهر( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Kuala Lumpur - Doha ticket for 6 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 6
+            },
+            {
+                'code': '007331108',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'Istanbul',
+                'destination_code': 'IST',
+                'commodity_ar': 'كلفة تذكرة دوحة_ اسطنبول لمدة 6 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Istanbul - Doha ticket for 6 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 6
+            },
+            {
+                'code': '007331109',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'Bangkok',
+                'destination_code': 'BKK',
+                'commodity_ar': 'كلفة تذكرة دوحة_ بانكوك _ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Bangkok - Doha ticket for 6 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 6
+            },
+            {
+                'code': '007331110',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'Tbilisi',
+                'destination_code': 'TBS',
+                'commodity_ar': 'كلفة تذكرة دوحة_تبليسي_ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Tbilisi - Doha ticket for 6 (semi flexible tourist ticket) months',
+                'ticket_type': 'Semi flexible',
+                'duration_months': 6
+            },
+            {
+                'code': '007331111',
+                'origin': 'Doha',
+                'origin_code': 'DOH',
+                'destination': 'New York',
+                'destination_code': 'JFK',
+                'commodity_ar': 'كلفة تذكرة دوحة_نيويورك دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - New York - Doha ticket for 6 (semi flexible tourist ticket) months',
                 'ticket_type': 'Semi flexible',
                 'duration_months': 6
             }
@@ -242,8 +339,10 @@ class FlightPriceScraper:
         except:
             return None
     
-    def _extract_price_from_page(self, selectors: List[str], min_price: int = 100, max_price: int = 50000) -> Optional[float]:
-        """Extract price from page using multiple selectors"""
+    def _extract_price_from_page(self, selectors: List[str], min_price: int = 500, max_price: int = 50000) -> Optional[float]:
+        """Extract price from page using multiple selectors.
+        min_price=500 to avoid capturing wrong values (baggage, taxes, etc.) from Kuwait/Malaysia/PIA pages.
+        International economy fares from Doha are typically 500+ QAR."""
         price = None
         
         # Try each selector
@@ -272,25 +371,29 @@ class FlightPriceScraper:
         if not price:
             try:
                 page_text = self.driver.page_source
-                # Look for common price patterns
+                # Prefer patterns that match typical fare amounts (4-6 digits); avoid small numbers
                 price_patterns = [
                     r'QAR\s*(\d{1,3}(?:,\d{3})*)',  # QAR followed by number
-                    r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',  # Numbers with commas
-                    r'(\d{3,6})',  # 3-6 digit numbers
+                    r'(\d{4,6})',   # 4-6 digit numbers (typical fare range, avoids 100/202/103)
+                    r'(\d{1,3}(?:,\d{3})+(?:\.\d{2})?)',  # Numbers with commas (e.g. 1,234.56)
+                    r'(\d{3,6})',   # 3-6 digit numbers (fallback)
                 ]
                 for pattern in price_patterns:
                     matches = re.findall(pattern, page_text)
                     if matches:
-                        for match in matches[:20]:
+                        # Sort candidates by value and pick first in valid range (prefer lower fare)
+                        candidates = []
+                        for match in matches[:30]:
                             try:
                                 price_val = float(str(match).replace(',', ''))
                                 if min_price <= price_val <= max_price:
-                                    price = price_val
-                                    print(f"      ✓ Extracted price from page source: {price}")
-                                    break
+                                    candidates.append(price_val)
                             except:
                                 continue
-                        if price:
+                        if candidates:
+                            # Use the smallest valid price (likely the main fare, not total with extras)
+                            price = min(candidates)
+                            print(f"      ✓ Extracted price from page source: {price}")
                             break
             except:
                 pass
