@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Monthly scheduler for flight price scraper
-Runs the scraper on the 3rd, 10th, 17th, and 24th of each month at 9:00 AM
+Runs the scraper on the 4th, 10th, 17th, and 24th of each month at 9:00 AM
 """
 
 import schedule
@@ -34,9 +34,9 @@ def run_flight_scraper():
 
 
 def should_run_today():
-    """Check if today is one of the scheduled days (3rd, 10th, 17th, 24th)"""
+    """Check if today is one of the scheduled days (4th, 10th, 17th, 24th)"""
     today = datetime.now()
-    scheduled_days = [3, 10, 17, 24]
+    scheduled_days = [4, 10, 17, 24]
     return today.day in scheduled_days
 
 
@@ -69,7 +69,7 @@ def main():
     
     print("Flight Price Scraper Scheduler Started")
     print("=" * 60)
-    print("Scheduled to run on the 3rd, 10th, 17th, and 24th of each month at 09:00")
+    print("Scheduled to run on the 4th, 10th, 17th, and 24th of each month at 09:00")
     print("Press Ctrl+C to stop the scheduler")
     print("=" * 60)
     
@@ -81,12 +81,12 @@ def main():
     elif should_run_today() and now.hour < 9:
         print(f"Today ({now.day}) is a scheduled day. Will run at 09:00")
     else:
-        next_scheduled = min([d for d in [3, 10, 17, 24] if d > now.day], default=None)
+        next_scheduled = min([d for d in [4, 10, 17, 24] if d > now.day], default=None)
         if next_scheduled:
             print(f"Next scheduled run: {next_scheduled} of this month at 09:00")
         else:
             # Next month
-            print(f"Next scheduled run: 3rd of next month at 09:00")
+            print(f"Next scheduled run: 4th of next month at 09:00")
     
     # Keep the script running
     while True:

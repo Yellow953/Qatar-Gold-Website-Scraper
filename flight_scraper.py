@@ -36,9 +36,10 @@ has a different structure and may require specific implementation:
    - Flexible or Semi-flexible tickets only
    - Prices should be in QAR (Qatari Riyal) when possible
 
-5. **Extending Routes:**
-   - Add new routes in the `_get_routes()` method
-   - Each route needs: code, origin, destination, commodity description, etc.
+5. **Routes (add/delete in Excel):**
+   - Routes are read from the Excel file, sheet "Routes".
+   - Columns: Code, Commodity, Origin, Origin_Code, Destination, Destination_Code, Duration_Months.
+   - Add or delete rows in that sheet to change which routes are scraped.
 """
 
 try:
@@ -68,18 +69,80 @@ import requests
 from bs4 import BeautifulSoup
 
 
+# Excel file name and sheet names
+FLIGHT_PRICES_EXCEL = 'flight_prices.xlsx'
+ROUTES_SHEET_NAME = 'Routes'
+FLIGHT_PRICES_SHEET_NAME = 'Flight Prices'
+
+
 class FlightPriceScraper:
-    """Scraper for flight prices from multiple airlines and travel websites"""
+    """Scraper for flight prices from multiple airlines and travel websites.
+    Routes are read from the Excel file (sheet 'Routes'). Add or delete rows there to change what is scraped."""
     
-    def __init__(self, headless=False):
+    def __init__(self, headless=False, excel_path: str = None):
         self.headless = headless
         self.driver = None
+        self.excel_path = excel_path or FLIGHT_PRICES_EXCEL
         self.routes = self._get_routes()
         self.sources = self._get_sources()
         self.results = []
-        
+    
+    def _load_routes_from_excel(self) -> Optional[List[Dict]]:
+        """Load routes from the 'Routes' sheet in the Excel file. Returns None if file/sheet missing or no data."""
+        if not os.path.exists(self.excel_path):
+            return None
+        try:
+            wb = load_workbook(self.excel_path, read_only=True, data_only=True)
+            if ROUTES_SHEET_NAME not in wb.sheetnames:
+                wb.close()
+                return None
+            ws = wb[ROUTES_SHEET_NAME]
+            routes = []
+            # Columns: A=Code, B=Commodity, C=Origin, D=Origin_Code, E=Destination, F=Destination_Code, G=Duration_Months
+            for row_idx in range(2, ws.max_row + 1):
+                code = ws.cell(row=row_idx, column=1).value
+                if not code or not str(code).strip():
+                    continue
+                commodity_ar = ws.cell(row=row_idx, column=2).value or ''
+                origin = ws.cell(row=row_idx, column=3).value or 'Doha'
+                origin_code = ws.cell(row=row_idx, column=4).value or 'DOH'
+                destination = ws.cell(row=row_idx, column=5).value
+                destination_code = ws.cell(row=row_idx, column=6).value
+                duration = ws.cell(row=row_idx, column=7).value
+                if not destination or not destination_code:
+                    continue
+                try:
+                    duration_months = int(duration) if duration is not None else 6
+                except (TypeError, ValueError):
+                    duration_months = 6
+                routes.append({
+                    'code': str(code).strip(),
+                    'origin': str(origin).strip(),
+                    'origin_code': str(origin_code).strip().upper(),
+                    'destination': str(destination).strip(),
+                    'destination_code': str(destination_code).strip().upper(),
+                    'commodity_ar': str(commodity_ar).strip(),
+                    'commodity_en': f"Cost of a {origin} - {destination} - {origin} ticket for {duration_months} months",
+                    'ticket_type': 'Semi flexible',
+                    'duration_months': duration_months
+                })
+            wb.close()
+            return routes if routes else None
+        except Exception as e:
+            print(f"  Note: Could not load routes from Excel ({e}), using defaults.")
+            return None
+    
     def _get_routes(self) -> List[Dict]:
-        """Get list of flight routes to scrape"""
+        """Get list of flight routes: from Excel if available, otherwise defaults."""
+        loaded = self._load_routes_from_excel()
+        if loaded:
+            print(f"  Loaded {len(loaded)} routes from Excel (sheet '{ROUTES_SHEET_NAME}')")
+            return loaded
+        print(f"  Using default routes (edit '{self.excel_path}' sheet '{ROUTES_SHEET_NAME}' to add/remove routes)")
+        return self._get_default_routes()
+    
+    def _get_default_routes(self) -> List[Dict]:
+        """Default route list (used when Excel has no Routes sheet or no data)."""
         routes = [
             {
                 'code': '007331101',
@@ -321,12 +384,41 @@ class FlightPriceScraper:
             self.driver.quit()
     
     def _calculate_dates(self, months_ahead: int = 6) -> Tuple[str, str]:
-        """Calculate departure and return dates (6 months from today)"""
+        """Flight search dates: departure = 1 week after execution, return = departure + duration (e.g. 6 months)."""
         today = datetime.now()
-        departure_date = today + timedelta(days=30)  # 1 month from today
-        return_date = departure_date + timedelta(days=months_ahead * 30)  # 6 months later
+        departure_date = today + timedelta(days=7)   # 1 week after execution
+        return_date = departure_date + timedelta(days=months_ahead * 30)  # e.g. 6 months later
         
         return departure_date.strftime('%Y-%m-%d'), return_date.strftime('%Y-%m-%d')
+    
+    # Scheduled run days each month (same as scheduler: 4th, 10th, 17th, 24th)
+    SCHEDULED_DAYS = (4, 10, 17, 24)
+    
+    def _get_scheduled_dates_through_2026(self) -> List[Tuple[str, datetime]]:
+        """Return list of (header_text, date) for 4th, 10th, 17th, 24th of each month from today through end of 2026."""
+        from datetime import date
+        today = date.today()
+        result = []
+        for year in range(today.year, 2027):
+            for month in range(1, 13):
+                if year == 2026 and month > 12:
+                    break
+                for day in self.SCHEDULED_DAYS:
+                    try:
+                        d = date(year, month, day)
+                        if d >= today:
+                            header = d.strftime('%d-%b')  # e.g. 04-Jan, 10-Jan
+                            result.append((header, datetime.combine(d, datetime.min.time())))
+                    except ValueError:
+                        pass  # e.g. Feb 30
+        return result
+    
+    def _get_current_run_date_header(self) -> str:
+        """Return the date header for this run: the scheduled date (4/10/17/24) that is >= today."""
+        scheduled = self._get_scheduled_dates_through_2026()
+        if not scheduled:
+            return datetime.now().strftime('%d-%b')
+        return scheduled[0][0]
     
     def _extract_price_from_text(self, text: str) -> Optional[float]:
         """Extract numeric price from text"""
@@ -1107,6 +1199,13 @@ class FlightPriceScraper:
                     continue
             
             results['routes'].append(route_results)
+            
+            # Write this route to Excel immediately so data is saved as we go
+            try:
+                self.append_route_to_excel(route_results, self.excel_path)
+                print(f"  ✓ Saved route {route['code']} to Excel")
+            except Exception as e:
+                print(f"  ✗ Could not save to Excel: {e}")
         
         self._close_driver()
         
@@ -1128,8 +1227,273 @@ class FlightPriceScraper:
         )
         cell.border = thin_border
     
-    def export_to_excel(self, results: Dict, filename: str = 'flight_prices.xlsx'):
-        """Export flight prices to Excel file matching the screenshot format exactly"""
+    def _ensure_routes_sheet(self, wb) -> None:
+        """Ensure workbook has a 'Routes' sheet with headers. If sheet is missing, create it and fill with default routes."""
+        if ROUTES_SHEET_NAME in wb.sheetnames:
+            return
+        from openpyxl import Workbook
+        ws_routes = wb.create_sheet(ROUTES_SHEET_NAME, 0)  # insert as first sheet
+        header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+        headers = ['Code', 'Commodity', 'Origin', 'Origin_Code', 'Destination', 'Destination_Code', 'Duration_Months']
+        for col, h in enumerate(headers, 1):
+            c = ws_routes.cell(row=1, column=col)
+            c.value = h
+            c.font = Font(bold=True)
+            c.fill = header_fill
+        for row_idx, r in enumerate(self._get_default_routes(), 2):
+            ws_routes.cell(row=row_idx, column=1).value = r['code']
+            ws_routes.cell(row=row_idx, column=2).value = r['commodity_ar']
+            ws_routes.cell(row=row_idx, column=3).value = r['origin']
+            ws_routes.cell(row=row_idx, column=4).value = r['origin_code']
+            ws_routes.cell(row=row_idx, column=5).value = r['destination']
+            ws_routes.cell(row=row_idx, column=6).value = r['destination_code']
+            ws_routes.cell(row=row_idx, column=7).value = r['duration_months']
+        ws_routes.column_dimensions['A'].width = 12
+        ws_routes.column_dimensions['B'].width = 55
+        ws_routes.column_dimensions['C'].width = 12
+        ws_routes.column_dimensions['D'].width = 12
+        ws_routes.column_dimensions['E'].width = 18
+        ws_routes.column_dimensions['F'].width = 12
+        ws_routes.column_dimensions['G'].width = 10
+        print(f"  Created sheet '{ROUTES_SHEET_NAME}' with default routes (edit in Excel to add/remove routes)")
+    
+    def _prepare_excel_for_export(self, filename: str):
+        """Load or create workbook, ensure structure (Routes + Flight Prices + date columns), return (wb, ws, date_col, next_row, thin_border, avg_fill)."""
+        file_exists = os.path.exists(filename)
+        if file_exists:
+            wb = load_workbook(filename)
+            self._ensure_routes_sheet(wb)
+            if FLIGHT_PRICES_SHEET_NAME in wb.sheetnames:
+                ws = wb[FLIGHT_PRICES_SHEET_NAME]
+            else:
+                ws = wb.active
+                ws.title = FLIGHT_PRICES_SHEET_NAME
+            ws.sheet_view.rightToLeft = True
+            max_col = ws.max_column
+            if max_col < 7:
+                max_col = 7
+        else:
+            wb = Workbook()
+            ws_routes = wb.active
+            ws_routes.title = ROUTES_SHEET_NAME
+            header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+            for col, h in enumerate(['Code', 'Commodity', 'Origin', 'Origin_Code', 'Destination', 'Destination_Code', 'Duration_Months'], 1):
+                c = ws_routes.cell(row=1, column=col)
+                c.value = h
+                c.font = Font(bold=True)
+                c.fill = header_fill
+            for row_idx, r in enumerate(self._get_default_routes(), 2):
+                ws_routes.cell(row=row_idx, column=1).value = r['code']
+                ws_routes.cell(row=row_idx, column=2).value = r['commodity_ar']
+                ws_routes.cell(row=row_idx, column=3).value = r['origin']
+                ws_routes.cell(row=row_idx, column=4).value = r['origin_code']
+                ws_routes.cell(row=row_idx, column=5).value = r['destination']
+                ws_routes.cell(row=row_idx, column=6).value = r['destination_code']
+                ws_routes.cell(row=row_idx, column=7).value = r['duration_months']
+            for col, w in enumerate([12, 55, 12, 12, 18, 12, 10], 1):
+                ws_routes.column_dimensions[get_column_letter(col)].width = w
+            ws = wb.create_sheet(FLIGHT_PRICES_SHEET_NAME, 1)
+            wb.active = ws
+            ws.sheet_view.rightToLeft = True
+            thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+            for col_idx, header in enumerate([
+                'Code', 'Commodity', 'الدرجة المقابلة لها في الخطوط (Class equivalent in airlines)',
+                'CPI-Flag', 'رمز المصدر (Source Code)', 'وكالات الخطوط (Flight Agencies)'
+            ], 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.value = header
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = thin_border
+            max_col = 6
+        
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+        scheduled_dates = self._get_scheduled_dates_through_2026()
+        header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+        
+        def _norm_date_header(val):
+            if not val:
+                return None
+            s = str(val).strip()
+            try:
+                d = datetime.strptime(s, '%d-%b')
+                return d.strftime('%d-%b')
+            except ValueError:
+                try:
+                    d = datetime.strptime(s, '%d-%b-%Y')
+                    return d.strftime('%d-%b')
+                except ValueError:
+                    return s
+        existing_headers = {}
+        for col in range(7, max_col + 1):
+            val = ws.cell(row=1, column=col).value
+            key = _norm_date_header(val)
+            if key:
+                existing_headers[key] = col
+        next_col = max_col + 1
+        for header_text, _ in scheduled_dates:
+            if header_text in existing_headers:
+                continue
+            cell = ws.cell(row=1, column=next_col)
+            cell.value = header_text
+            cell.font = Font(bold=True)
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = thin_border
+            existing_headers[header_text] = next_col
+            next_col += 1
+        max_col = next_col - 1
+        date_text = self._get_current_run_date_header()
+        date_col = existing_headers.get(date_text)
+        if date_col is None:
+            date_col = max_col + 1
+            cell = ws.cell(row=1, column=date_col)
+            cell.value = date_text
+            cell.font = Font(bold=True)
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = thin_border
+            max_col = date_col
+        for col in range(1, max_col + 1):
+            c = ws.cell(row=1, column=col)
+            c.fill = header_fill
+            c.font = Font(bold=True)
+            c.border = thin_border
+            c.alignment = Alignment(horizontal='center', vertical='center')
+        row = 2
+        while ws.cell(row=row, column=1).value is not None:
+            row += 1
+        avg_fill = PatternFill(start_color='FFE4B5', end_color='FFE4B5', fill_type='solid')
+        return (wb, ws, date_col, row, thin_border, avg_fill)
+    
+    def _write_route_to_sheet(self, ws, route_result: Dict, row: int, date_col: int, thin_border, avg_fill) -> int:
+        """Write one route's data (prices + averages) to ws starting at row. Returns next row after this route."""
+        route = route_result['route']
+        prices = route_result.get('prices', [])
+        route_start_row = row
+        sorted_prices = sorted(prices, key=lambda x: (x.get('airline', 'Various'), x.get('source', '')))
+        for price_data in sorted_prices:
+            route = route_result['route']
+            ws.cell(row=row, column=1).value = route['code']
+            ws.cell(row=row, column=1).border = thin_border
+            ws.cell(row=row, column=1).alignment = Alignment(horizontal='center', vertical='center')
+            ws.cell(row=row, column=2).value = route['commodity_ar']
+            ws.cell(row=row, column=2).border = thin_border
+            ws.cell(row=row, column=2).alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
+            ws.cell(row=row, column=3).value = 'Economy'
+            ws.cell(row=row, column=3).border = thin_border
+            ws.cell(row=row, column=3).alignment = Alignment(horizontal='center', vertical='center')
+            ws.cell(row=row, column=4).value = 'Y'
+            ws.cell(row=row, column=4).border = thin_border
+            ws.cell(row=row, column=4).alignment = Alignment(horizontal='center', vertical='center')
+            ws.cell(row=row, column=5).value = price_data.get('source_code', '')
+            ws.cell(row=row, column=5).border = thin_border
+            ws.cell(row=row, column=5).alignment = Alignment(horizontal='center', vertical='center')
+            agency_name = price_data.get('source_ar', price_data.get('source', ''))
+            airline_name = price_data.get('airline', '')
+            source_name = price_data.get('source', '')
+            if airline_name and airline_name != 'Various':
+                if source_name in ['KAYAK', 'eDreams', 'CheapAir', 'ITA Matrix']:
+                    val = f"Kayak عبر {airline_name}" if source_name == 'KAYAK' else (f"matrix عبر {airline_name}" if source_name == 'ITA Matrix' else f"{agency_name} عبر {airline_name}")
+                else:
+                    val = agency_name
+            else:
+                val = agency_name
+            ws.cell(row=row, column=6).value = val
+            ws.cell(row=row, column=6).border = thin_border
+            ws.cell(row=row, column=6).alignment = Alignment(horizontal='right', vertical='center')
+            p = price_data.get('price')
+            if p:
+                ws.cell(row=row, column=date_col).value = p
+                ws.cell(row=row, column=date_col).number_format = '0'
+            ws.cell(row=row, column=date_col).border = thin_border
+            ws.cell(row=row, column=date_col).alignment = Alignment(horizontal='center', vertical='center')
+            row += 1
+        airline_avg_groups = {}
+        for price_data in prices:
+            airline = price_data.get('airline', 'Various')
+            if airline != 'Various':
+                if airline not in airline_avg_groups:
+                    airline_avg_groups[airline] = []
+                if price_data.get('price') and price_data.get('price') > 0:
+                    airline_avg_groups[airline].append(price_data.get('price'))
+        airline_ar_map = {'Qatar Airways': 'القطرية', 'British Airways': 'البريطانية', 'Malaysia Airlines': 'الماليزية', 'Kuwait Airways': 'الكويتية', 'Turkish Airlines': 'التركية', 'Pakistan International Airlines': 'الباكستانية', 'PIA': 'الباكستانية'}
+        for airline, price_list in airline_avg_groups.items():
+            if len(price_list) <= 1:
+                continue
+            avg_price = sum(price_list) / len(price_list)
+            for col in range(1, 7):
+                cell = ws.cell(row=row, column=col)
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='center' if col != 2 and col != 6 else 'right', vertical='center')
+            ws.cell(row=row, column=1).value = route['code']
+            ws.cell(row=row, column=2).value = route['commodity_ar']
+            ws.cell(row=row, column=3).value = 'Economy'
+            ws.cell(row=row, column=4).value = 'N-averages'
+            ws.cell(row=row, column=5).value = ''
+            ws.cell(row=row, column=6).value = f"متوسط المصادر للخطوط {airline_ar_map.get(airline, airline)}"
+            pc = ws.cell(row=row, column=date_col)
+            pc.value = round(avg_price)
+            pc.number_format = '0'
+            pc.font = Font(bold=True)
+            pc.border = thin_border
+            pc.fill = avg_fill
+            pc.alignment = Alignment(horizontal='center', vertical='center')
+            for c in range(7, date_col):
+                fc = ws.cell(row=row, column=c)
+                fc.fill = avg_fill
+                fc.border = thin_border
+            row += 1
+        all_valid_prices = [p.get('price') for p in prices if p.get('price') and p.get('price') > 0]
+        if all_valid_prices:
+            overall_avg = sum(all_valid_prices) / len(all_valid_prices)
+            for col in range(1, 7):
+                cell = ws.cell(row=row, column=col)
+                cell.border = thin_border
+                cell.fill = avg_fill
+                cell.alignment = Alignment(horizontal='center' if col not in (2, 6) else 'right', vertical='center')
+            ws.cell(row=row, column=1).value = route['code']
+            ws.cell(row=row, column=2).value = route['commodity_ar']
+            ws.cell(row=row, column=3).value = 'Economy'
+            ws.cell(row=row, column=4).value = 'Y-averages'
+            ws.cell(row=row, column=5).value = ''
+            ws.cell(row=row, column=6).value = "متوسط المصادر"
+            pc = ws.cell(row=row, column=date_col)
+            pc.value = round(overall_avg)
+            pc.number_format = '0'
+            pc.font = Font(bold=True)
+            pc.border = thin_border
+            pc.fill = avg_fill
+            pc.alignment = Alignment(horizontal='center', vertical='center')
+            for c in range(7, date_col):
+                fc = ws.cell(row=row, column=c)
+                fc.fill = avg_fill
+                fc.border = thin_border
+            row += 1
+        route_end_row = row - 1
+        if route_end_row >= route_start_row and route_end_row > route_start_row:
+            try:
+                for merged_range in list(ws.merged_cells.ranges):
+                    if merged_range.min_col == 2 and merged_range.max_col == 2 and merged_range.min_row <= route_start_row <= merged_range.max_row:
+                        ws.unmerge_cells(str(merged_range))
+                ws.merge_cells(f'B{route_start_row}:B{route_end_row}')
+                ws.cell(row=route_start_row, column=2).alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
+            except Exception:
+                pass
+        return row
+    
+    def append_route_to_excel(self, route_result: Dict, filename: str = None):
+        """Append one route's data to the Excel file immediately (called after each route is scraped)."""
+        filename = filename or self.excel_path
+        wb, ws, date_col, row, thin_border, avg_fill = self._prepare_excel_for_export(filename)
+        row = self._write_route_to_sheet(ws, route_result, row, date_col, thin_border, avg_fill)
+        wb.save(filename)
+    
+    def export_to_excel(self, results: Dict, filename: str = None):
+        """Export all flight prices to Excel. If data was already written per-route, this can re-write or just save column widths."""
+        filename = filename or self.excel_path
         print(f"\n{'='*60}")
         print("EXPORTING TO EXCEL")
         print(f"{'='*60}")
@@ -1138,388 +1502,10 @@ class FlightPriceScraper:
             print(f"Error: Cannot export - {results['error']}")
             return False
         
-        # Create or load workbook
-        file_exists = os.path.exists(filename)
-        if file_exists:
-            print(f"Loading existing file: {filename}")
-            wb = load_workbook(filename)
-            ws = wb.active
-            ws.sheet_view.rightToLeft = True
-            max_col = ws.max_column
-            if max_col < 7:  # At least 7 columns for headers
-                max_col = 7
-            print(f"  Existing file has {max_col} columns, {ws.max_row} rows")
-        else:
-            print(f"Creating new file: {filename}")
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Flight Prices"
-            ws.sheet_view.rightToLeft = True
-            
-            # Create headers
-            headers = [
-                'Code',
-                'Commodity',
-                'الدرجة المقابلة لها في الخطوط (Class equivalent in airlines)',
-                'CPI-Flag',
-                'رمز المصدر (Source Code)',
-                'وكالات الخطوط (Flight Agencies)'
-            ]
-            
-            thin_border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-            
-            for col_idx, header in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col_idx)
-                cell.value = header
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                cell.border = thin_border
-            
-            max_col = 6  # 6 header columns
-            print(f"  Created headers in {max_col} columns")
-        
-        # Get current week date
-        today = datetime.now()
-        date_text = today.strftime('%d-%b')  # Format: 3-Jan, 10-Jan, etc.
-        print(f"  Date column: {date_text}")
-        
-        # Check if this week's column already exists
-        date_col = None
-        for col in range(7, max_col + 1):
-            cell_value = ws.cell(row=1, column=col).value
-            if cell_value and date_text in str(cell_value):
-                date_col = col
-                print(f"  Found existing date column at column {date_col}")
-                break
-        
-        if date_col is None:
-            date_col = max_col + 1
-            # Add date header with border
-            thin_border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-            date_cell = ws.cell(row=1, column=date_col)
-            date_cell.value = date_text
-            date_cell.font = Font(bold=True)
-            date_cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-            date_cell.alignment = Alignment(horizontal='center', vertical='center')
-            date_cell.border = thin_border
-            print(f"  Created new date column at column {date_col}")
-        
-        # Ensure header row has yellow fill on ALL columns (1 through date_col)
-        header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        for col in range(1, date_col + 1):
-            header_cell = ws.cell(row=1, column=col)
-            header_cell.fill = header_fill
-            header_cell.font = Font(bold=True)
-            header_cell.border = thin_border
-            header_cell.alignment = Alignment(horizontal='center', vertical='center')
-        
-        # Find the next available row (if file exists, find last row with data)
-        if file_exists:
-            # Find the last row with data in column A (Code column)
-            row = 2
-            while ws.cell(row=row, column=1).value is not None:
-                row += 1
-            print(f"  Starting from row {row} (after existing data)")
-        else:
-            row = 2  # Start from row 2 (row 1 is headers)
-            print(f"  Starting from row {row} (new file)")
-        
+        wb, ws, date_col, row, thin_border, avg_fill = self._prepare_excel_for_export(filename)
         initial_row = row
-        total_prices_written = 0
-        
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-        
-        # Light orange/peach color for averages (similar to screenshot)
-        avg_fill = PatternFill(start_color='FFE4B5', end_color='FFE4B5', fill_type='solid')
-        
-        # Process each route
         for route_result in results.get('routes', []):
-            route = route_result['route']
-            prices = route_result.get('prices', [])
-            print(f"  Processing route {route['code']}: {len(prices)} prices found")
-            
-            route_start_row = row  # Track where this route starts for merging
-            
-            # Group prices by airline for proper averaging
-            airline_price_map = {}
-            for price_data in prices:
-                airline = price_data.get('airline', 'Various')
-                if airline not in airline_price_map:
-                    airline_price_map[airline] = []
-                airline_price_map[airline].append(price_data)
-            
-            # Write individual source prices
-            # Sort by airline first, then by source
-            sorted_prices = sorted(prices, key=lambda x: (
-                x.get('airline', 'Various'),
-                x.get('source', '')
-            ))
-            
-            for price_data in sorted_prices:
-                # Code
-                cell = ws.cell(row=row, column=1)
-                cell.value = route['code']
-                cell.border = thin_border
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                # Commodity (will be merged later)
-                cell = ws.cell(row=row, column=2)
-                cell.value = route['commodity_ar']
-                cell.border = thin_border
-                cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
-                
-                # Class
-                cell = ws.cell(row=row, column=3)
-                cell.value = 'Economy'
-                cell.border = thin_border
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                # CPI-Flag
-                cell = ws.cell(row=row, column=4)
-                cell.value = 'Y'
-                cell.border = thin_border
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                # Source Code
-                cell = ws.cell(row=row, column=5)
-                cell.value = price_data.get('source_code', '')
-                cell.border = thin_border
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                # Flight Agencies
-                cell = ws.cell(row=row, column=6)
-                agency_name = price_data.get('source_ar', price_data.get('source', ''))
-                airline_name = price_data.get('airline', '')
-                source_name = price_data.get('source', '')
-                
-                # Format agency name based on source type
-                if airline_name and airline_name != 'Various':
-                    # For aggregators showing specific airline prices
-                    if source_name in ['KAYAK', 'eDreams', 'CheapAir', 'ITA Matrix']:
-                        # Format: "Kayak عبر الخطوط العمانية" or "matrix عبر الخطوط العمانية"
-                        if source_name == 'KAYAK':
-                            cell.value = f"Kayak عبر {airline_name}"
-                        elif source_name == 'ITA Matrix':
-                            cell.value = f"matrix عبر {airline_name}"
-                        else:
-                            cell.value = f"{agency_name} عبر {airline_name}"
-                    else:
-                        # Direct airline booking
-                        cell.value = agency_name
-                else:
-                    # Aggregator without specific airline
-                    cell.value = agency_name
-                
-                cell.border = thin_border
-                cell.alignment = Alignment(horizontal='right', vertical='center')
-                
-                # Price
-                price = price_data.get('price')
-                cell = ws.cell(row=row, column=date_col)
-                if price:
-                    cell.value = price
-                    cell.number_format = '0'
-                    total_prices_written += 1
-                cell.border = thin_border
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                row += 1
-            
-            # Calculate and add averages for each airline group
-            # Group by airline name (not 'Various')
-            airline_avg_groups = {}
-            for price_data in prices:
-                airline = price_data.get('airline', 'Various')
-                if airline != 'Various':
-                    if airline not in airline_avg_groups:
-                        airline_avg_groups[airline] = []
-                    price = price_data.get('price')
-                    if price and price > 0:
-                        airline_avg_groups[airline].append(price)
-            
-            # Write averages for airlines with multiple prices
-            for airline, price_list in airline_avg_groups.items():
-                if len(price_list) > 1:  # Only average if multiple sources
-                    avg_price = sum(price_list) / len(price_list)
-                    
-                    # Code
-                    cell = ws.cell(row=row, column=1)
-                    cell.value = route['code']
-                    cell.border = thin_border
-                    cell.fill = avg_fill
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                    
-                    # Commodity (will be merged)
-                    cell = ws.cell(row=row, column=2)
-                    cell.value = route['commodity_ar']
-                    cell.border = thin_border
-                    cell.fill = avg_fill
-                    cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
-                    
-                    # Class
-                    cell = ws.cell(row=row, column=3)
-                    cell.value = 'Economy'
-                    cell.border = thin_border
-                    cell.fill = avg_fill
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                    
-                    # CPI-Flag (N-averages or Y-averages)
-                    cell = ws.cell(row=row, column=4)
-                    cell.value = 'N-averages'
-                    cell.border = thin_border
-                    cell.fill = avg_fill
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                    
-                    # Source Code (empty for averages)
-                    cell = ws.cell(row=row, column=5)
-                    cell.value = ''
-                    cell.border = thin_border
-                    cell.fill = avg_fill
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                    
-                    # Flight Agencies (Average) - format: "متوسط المصادر للخطوط [Airline]"
-                    cell = ws.cell(row=row, column=6)
-                    # Get Arabic airline name if available
-                    airline_ar_map = {
-                        'Qatar Airways': 'القطرية',
-                        'British Airways': 'البريطانية',
-                        'Malaysia Airlines': 'الماليزية',
-                        'Kuwait Airways': 'الكويتية',
-                        'Turkish Airlines': 'التركية',
-                        'Pakistan International Airlines': 'الباكستانية',
-                        'PIA': 'الباكستانية'
-                    }
-                    airline_ar = airline_ar_map.get(airline, airline)
-                    cell.value = f"متوسط المصادر للخطوط {airline_ar}"
-                    cell.border = thin_border
-                    cell.fill = avg_fill
-                    cell.alignment = Alignment(horizontal='right', vertical='center')
-                    
-                    # Average Price (bold)
-                    cell = ws.cell(row=row, column=date_col)
-                    cell.value = round(avg_price)
-                    cell.number_format = '0'
-                    cell.font = Font(bold=True)
-                    cell.border = thin_border
-                    cell.fill = avg_fill
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                    total_prices_written += 1
-                    
-                    # Fill any columns between 7 and date_col for consistent row fill
-                    for c in range(7, date_col):
-                        fill_cell = ws.cell(row=row, column=c)
-                        fill_cell.fill = avg_fill
-                        fill_cell.border = thin_border
-                    
-                    row += 1
-            
-            # Add overall average row for ALL prices at the end of each route
-            all_valid_prices = [p.get('price') for p in prices if p.get('price') and p.get('price') > 0]
-            if len(all_valid_prices) > 0:
-                overall_avg = sum(all_valid_prices) / len(all_valid_prices)
-                
-                # Code
-                cell = ws.cell(row=row, column=1)
-                cell.value = route['code']
-                cell.border = thin_border
-                cell.fill = avg_fill
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                # Commodity (will be merged)
-                cell = ws.cell(row=row, column=2)
-                cell.value = route['commodity_ar']
-                cell.border = thin_border
-                cell.fill = avg_fill
-                cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
-                
-                # Class
-                cell = ws.cell(row=row, column=3)
-                cell.value = 'Economy'
-                cell.border = thin_border
-                cell.fill = avg_fill
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                # CPI-Flag (Y-averages for overall average)
-                cell = ws.cell(row=row, column=4)
-                cell.value = 'Y-averages'
-                cell.border = thin_border
-                cell.fill = avg_fill
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                # Source Code (empty for averages)
-                cell = ws.cell(row=row, column=5)
-                cell.value = ''
-                cell.border = thin_border
-                cell.fill = avg_fill
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                # Flight Agencies (Overall Average)
-                cell = ws.cell(row=row, column=6)
-                cell.value = "متوسط المصادر"  # Average of all sources
-                cell.border = thin_border
-                cell.fill = avg_fill
-                cell.alignment = Alignment(horizontal='right', vertical='center')
-                
-                # Overall Average Price (bold)
-                cell = ws.cell(row=row, column=date_col)
-                cell.value = round(overall_avg)
-                cell.number_format = '0'
-                cell.font = Font(bold=True)
-                cell.border = thin_border
-                cell.fill = avg_fill
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                total_prices_written += 1
-                
-                # Fill any columns between 7 and date_col for consistent row fill
-                for c in range(7, date_col):
-                    fill_cell = ws.cell(row=row, column=c)
-                    fill_cell.fill = avg_fill
-                    fill_cell.border = thin_border
-                
-                row += 1
-            
-            # Merge commodity cells for this route (including average rows)
-            route_end_row = row - 1
-            if route_end_row >= route_start_row:
-                try:
-                    # Unmerge any existing merged cells in this range first
-                    for merged_range in list(ws.merged_cells.ranges):
-                        if merged_range.min_col == 2 and merged_range.max_col == 2:
-                            if merged_range.min_row <= route_start_row <= merged_range.max_row:
-                                ws.unmerge_cells(str(merged_range))
-                    
-                    # Merge commodity column for this route
-                    if route_end_row > route_start_row:
-                        ws.merge_cells(f'B{route_start_row}:B{route_end_row}')
-                    # Set alignment for merged cell
-                    merged_cell = ws.cell(row=route_start_row, column=2)
-                    merged_cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
-                    print(f"    Merged commodity cells from row {route_start_row} to {route_end_row}")
-                except Exception as e:
-                    print(f"    Warning: Could not merge commodity cells: {e}")
-                    pass  # If merge fails, continue
+            row = self._write_route_to_sheet(ws, route_result, row, date_col, thin_border, avg_fill)
         
         # Auto-adjust column widths
         ws.column_dimensions['A'].width = 12  # Code
@@ -1534,12 +1520,12 @@ class FlightPriceScraper:
         
         ws.sheet_view.rightToLeft = True
         
+        date_text = self._get_current_run_date_header()
         try:
             wb.save(filename)
             rows_written = row - initial_row
             print(f"\n✓ Prices exported to {filename} (RTL layout)")
             print(f"  Rows written: {rows_written}")
-            print(f"  Prices written: {total_prices_written}")
             print(f"  Date column: {date_text} (column {date_col})")
             return True
         except Exception as e:
@@ -1564,9 +1550,8 @@ def main():
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"\nPrices saved to {json_file}")
     
-    # Export to Excel
-    excel_file = 'flight_prices.xlsx'
-    scraper.export_to_excel(results, excel_file)
+    # Export to Excel (uses scraper.excel_path; routes are read from sheet "Routes")
+    scraper.export_to_excel(results)
 
 
 if __name__ == "__main__":
