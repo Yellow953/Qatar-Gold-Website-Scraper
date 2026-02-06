@@ -37,9 +37,9 @@ has a different structure and may require specific implementation:
    - Prices should be in QAR (Qatari Riyal) when possible
 
 5. **Routes (add/delete in Excel):**
-   - Routes are read from the Excel file, sheet "Routes".
+   - Routes are read from the top of the single sheet "Flight Prices" (route block: row 1 = headers, rows 2+ = data).
    - Columns: Code, Commodity, Origin, Origin_Code, Destination, Destination_Code, Duration_Months.
-   - Add or delete rows in that sheet to change which routes are scraped.
+   - Add or delete rows in that block to change which routes are scraped.
 """
 
 try:
@@ -69,10 +69,11 @@ import requests
 from bs4 import BeautifulSoup
 
 
-# Excel file name and sheet names
+# Excel file name and sheet names (single sheet: routes at top, flight prices below)
 FLIGHT_PRICES_EXCEL = 'flight_prices.xlsx'
-ROUTES_SHEET_NAME = 'Routes'
 FLIGHT_PRICES_SHEET_NAME = 'Flight Prices'
+ROUTE_HEADERS = ['Code', 'Commodity', 'Origin', 'Origin_Code', 'Destination', 'Destination_Code', 'Duration_Months']
+FLIGHT_HEADER_MARKER = 'وكالات'  # Part of "وكالات الخطوط (Flight Agencies)" to find flight header row
 
 
 class FlightPriceScraper:
@@ -88,44 +89,86 @@ class FlightPriceScraper:
         self.results = []
     
     def _load_routes_from_excel(self) -> Optional[List[Dict]]:
-        """Load routes from the 'Routes' sheet in the Excel file. Returns None if file/sheet missing or no data."""
+        """Load routes from the top of the single Excel sheet (route block: row 1 = headers, rows 2+ = data until blank or flight header)."""
         if not os.path.exists(self.excel_path):
             return None
         try:
             wb = load_workbook(self.excel_path, read_only=True, data_only=True)
-            if ROUTES_SHEET_NAME not in wb.sheetnames:
+            if FLIGHT_PRICES_SHEET_NAME not in wb.sheetnames:
+                ws = wb.active  # fallback for old files with different sheet name
+            else:
+                ws = wb[FLIGHT_PRICES_SHEET_NAME]
+            routes = []
+            # Route block: row 1 = headers (Code, Commodity, Origin, ...), rows 2+ = data. Stop at empty A or flight header row.
+            first_cell = ws.cell(row=1, column=1).value
+            col3 = str(ws.cell(row=1, column=3).value or '')
+            if not first_cell or str(first_cell).strip() != 'Code':
                 wb.close()
                 return None
-            ws = wb[ROUTES_SHEET_NAME]
-            routes = []
-            # Columns: A=Code, B=Commodity, C=Origin, D=Origin_Code, E=Destination, F=Destination_Code, G=Duration_Months
-            for row_idx in range(2, ws.max_row + 1):
-                code = ws.cell(row=row_idx, column=1).value
-                if not code or not str(code).strip():
-                    continue
-                commodity_ar = ws.cell(row=row_idx, column=2).value or ''
-                origin = ws.cell(row=row_idx, column=3).value or 'Doha'
-                origin_code = ws.cell(row=row_idx, column=4).value or 'DOH'
-                destination = ws.cell(row=row_idx, column=5).value
-                destination_code = ws.cell(row=row_idx, column=6).value
-                duration = ws.cell(row=row_idx, column=7).value
-                if not destination or not destination_code:
-                    continue
-                try:
-                    duration_months = int(duration) if duration is not None else 6
-                except (TypeError, ValueError):
-                    duration_months = 6
-                routes.append({
-                    'code': str(code).strip(),
-                    'origin': str(origin).strip(),
-                    'origin_code': str(origin_code).strip().upper(),
-                    'destination': str(destination).strip(),
-                    'destination_code': str(destination_code).strip().upper(),
-                    'commodity_ar': str(commodity_ar).strip(),
-                    'commodity_en': f"Cost of a {origin} - {destination} - {origin} ticket for {duration_months} months",
-                    'ticket_type': 'Semi flexible',
-                    'duration_months': duration_months
-                })
+            if 'Class' not in col3 and 'الدرجة' not in col3:
+                for row_idx in range(2, ws.max_row + 1):
+                    code = ws.cell(row=row_idx, column=1).value
+                    if not code or not str(code).strip():
+                        break
+                    col6 = str(ws.cell(row=row_idx, column=6).value or '')
+                    if FLIGHT_HEADER_MARKER in col6:
+                        break
+                    commodity_ar = ws.cell(row=row_idx, column=2).value or ''
+                    origin = ws.cell(row=row_idx, column=3).value or 'Doha'
+                    origin_code = ws.cell(row=row_idx, column=4).value or 'DOH'
+                    destination = ws.cell(row=row_idx, column=5).value
+                    destination_code = ws.cell(row=row_idx, column=6).value
+                    duration = ws.cell(row=row_idx, column=7).value
+                    if not destination or not destination_code:
+                        continue
+                    try:
+                        duration_months = int(duration) if duration is not None else 6
+                    except (TypeError, ValueError):
+                        duration_months = 6
+                    routes.append({
+                        'code': str(code).strip(),
+                        'origin': str(origin).strip(),
+                        'origin_code': str(origin_code).strip().upper(),
+                        'destination': str(destination).strip(),
+                        'destination_code': str(destination_code).strip().upper(),
+                        'commodity_ar': str(commodity_ar).strip(),
+                        'commodity_en': f"Cost of a {origin} - {destination} - {origin} ticket for {duration_months} months",
+                        'ticket_type': 'Semi flexible',
+                        'duration_months': duration_months
+                    })
+            if routes:
+                wb.close()
+                return routes
+            if 'Routes' in wb.sheetnames:
+                ws_legacy = wb['Routes']
+                routes = []
+                for row_idx in range(2, ws_legacy.max_row + 1):
+                    code = ws_legacy.cell(row=row_idx, column=1).value
+                    if not code or not str(code).strip():
+                        continue
+                    commodity_ar = ws_legacy.cell(row=row_idx, column=2).value or ''
+                    origin = ws_legacy.cell(row=row_idx, column=3).value or 'Doha'
+                    origin_code = ws_legacy.cell(row=row_idx, column=4).value or 'DOH'
+                    destination = ws_legacy.cell(row=row_idx, column=5).value
+                    destination_code = ws_legacy.cell(row=row_idx, column=6).value
+                    duration = ws_legacy.cell(row=row_idx, column=7).value
+                    if not destination or not destination_code:
+                        continue
+                    try:
+                        duration_months = int(duration) if duration is not None else 6
+                    except (TypeError, ValueError):
+                        duration_months = 6
+                    routes.append({
+                        'code': str(code).strip(),
+                        'origin': str(origin).strip(),
+                        'origin_code': str(origin_code).strip().upper(),
+                        'destination': str(destination).strip(),
+                        'destination_code': str(destination_code).strip().upper(),
+                        'commodity_ar': str(commodity_ar).strip(),
+                        'commodity_en': f"Cost of a {origin} - {destination} - {origin} ticket for {duration_months} months",
+                        'ticket_type': 'Semi flexible',
+                        'duration_months': duration_months
+                    })
             wb.close()
             return routes if routes else None
         except Exception as e:
@@ -136,9 +179,9 @@ class FlightPriceScraper:
         """Get list of flight routes: from Excel if available, otherwise defaults."""
         loaded = self._load_routes_from_excel()
         if loaded:
-            print(f"  Loaded {len(loaded)} routes from Excel (sheet '{ROUTES_SHEET_NAME}')")
+            print(f"  Loaded {len(loaded)} routes from Excel (top of sheet '{FLIGHT_PRICES_SHEET_NAME}')")
             return loaded
-        print(f"  Using default routes (edit '{self.excel_path}' sheet '{ROUTES_SHEET_NAME}' to add/remove routes)")
+        print(f"  Using default routes (edit route block at top of '{self.excel_path}' to add/remove routes)")
         return self._get_default_routes()
     
     def _get_default_routes(self) -> List[Dict]:
@@ -1227,91 +1270,95 @@ class FlightPriceScraper:
         )
         cell.border = thin_border
     
-    def _ensure_routes_sheet(self, wb) -> None:
-        """Ensure workbook has a 'Routes' sheet with headers. If sheet is missing, create it and fill with default routes."""
-        if ROUTES_SHEET_NAME in wb.sheetnames:
-            return
-        from openpyxl import Workbook
-        ws_routes = wb.create_sheet(ROUTES_SHEET_NAME, 0)  # insert as first sheet
+    def _flight_header_row(self, ws) -> Optional[int]:
+        """Return the 1-based row number where flight price headers are (column 6 contains FLIGHT_HEADER_MARKER), or None."""
+        for r in range(1, ws.max_row + 1):
+            if FLIGHT_HEADER_MARKER in str(ws.cell(row=r, column=6).value or ''):
+                return r
+        return None
+
+    def _ensure_route_block(self, ws) -> int:
+        """Ensure the sheet has route block at top (row 1 = headers, rows 2+ = data). Returns the row after the route block (0 if flight-only sheet)."""
+        col3 = str(ws.cell(row=1, column=3).value or '')
+        if 'Class' in col3 or 'الدرجة' in col3:
+            return 0
         header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-        headers = ['Code', 'Commodity', 'Origin', 'Origin_Code', 'Destination', 'Destination_Code', 'Duration_Months']
-        for col, h in enumerate(headers, 1):
-            c = ws_routes.cell(row=1, column=col)
-            c.value = h
-            c.font = Font(bold=True)
-            c.fill = header_fill
-        for row_idx, r in enumerate(self._get_default_routes(), 2):
-            ws_routes.cell(row=row_idx, column=1).value = r['code']
-            ws_routes.cell(row=row_idx, column=2).value = r['commodity_ar']
-            ws_routes.cell(row=row_idx, column=3).value = r['origin']
-            ws_routes.cell(row=row_idx, column=4).value = r['origin_code']
-            ws_routes.cell(row=row_idx, column=5).value = r['destination']
-            ws_routes.cell(row=row_idx, column=6).value = r['destination_code']
-            ws_routes.cell(row=row_idx, column=7).value = r['duration_months']
-        ws_routes.column_dimensions['A'].width = 12
-        ws_routes.column_dimensions['B'].width = 55
-        ws_routes.column_dimensions['C'].width = 12
-        ws_routes.column_dimensions['D'].width = 12
-        ws_routes.column_dimensions['E'].width = 18
-        ws_routes.column_dimensions['F'].width = 12
-        ws_routes.column_dimensions['G'].width = 10
-        print(f"  Created sheet '{ROUTES_SHEET_NAME}' with default routes (edit in Excel to add/remove routes)")
+        if ws.cell(row=1, column=1).value != 'Code':
+            for col, h in enumerate(ROUTE_HEADERS, 1):
+                c = ws.cell(row=1, column=col)
+                c.value = h
+                c.font = Font(bold=True)
+                c.fill = header_fill
+        if not ws.cell(row=2, column=1).value:
+            for row_idx, r in enumerate(self._get_default_routes(), 2):
+                ws.cell(row=row_idx, column=1).value = r['code']
+                ws.cell(row=row_idx, column=2).value = r['commodity_ar']
+                ws.cell(row=row_idx, column=3).value = r['origin']
+                ws.cell(row=row_idx, column=4).value = r['origin_code']
+                ws.cell(row=row_idx, column=5).value = r['destination']
+                ws.cell(row=row_idx, column=6).value = r['destination_code']
+                ws.cell(row=row_idx, column=7).value = r['duration_months']
+            print(f"  Created route block at top of sheet with default routes (edit in Excel to add/remove routes)")
+        last_route_row = 1
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(row=r, column=1).value and FLIGHT_HEADER_MARKER not in str(ws.cell(row=r, column=6).value or ''):
+                last_route_row = r
+            else:
+                break
+        return last_route_row + 1
     
     def _prepare_excel_for_export(self, filename: str):
-        """Load or create workbook, ensure structure (Routes + Flight Prices + date columns), return (wb, ws, date_col, next_row, thin_border, avg_fill)."""
+        """Load or create workbook; single sheet with route block at top and flight prices below. Return (wb, ws, date_col, next_row, thin_border, avg_fill)."""
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+        header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+        flight_headers = [
+            'Code', 'Commodity', 'الدرجة المقابلة لها في الخطوط (Class equivalent in airlines)',
+            'CPI-Flag', 'رمز المصدر (Source Code)', 'وكالات الخطوط (Flight Agencies)'
+        ]
         file_exists = os.path.exists(filename)
         if file_exists:
             wb = load_workbook(filename)
-            self._ensure_routes_sheet(wb)
             if FLIGHT_PRICES_SHEET_NAME in wb.sheetnames:
                 ws = wb[FLIGHT_PRICES_SHEET_NAME]
             else:
                 ws = wb.active
                 ws.title = FLIGHT_PRICES_SHEET_NAME
             ws.sheet_view.rightToLeft = True
-            max_col = ws.max_column
-            if max_col < 7:
-                max_col = 7
+            row_after_routes = self._ensure_route_block(ws)
+            hrow = self._flight_header_row(ws)
+            if hrow is None:
+                flight_header_row = row_after_routes + 1
+                for col_idx, header in enumerate(flight_headers, 1):
+                    cell = ws.cell(row=flight_header_row, column=col_idx)
+                    cell.value = header
+                    cell.font = Font(bold=True)
+                    cell.fill = header_fill
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                    cell.border = thin_border
+                max_col = 6
+            else:
+                flight_header_row = hrow
+                max_col = ws.max_column
+                if max_col < 7:
+                    max_col = 7
         else:
             wb = Workbook()
-            ws_routes = wb.active
-            ws_routes.title = ROUTES_SHEET_NAME
-            header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-            for col, h in enumerate(['Code', 'Commodity', 'Origin', 'Origin_Code', 'Destination', 'Destination_Code', 'Duration_Months'], 1):
-                c = ws_routes.cell(row=1, column=col)
-                c.value = h
-                c.font = Font(bold=True)
-                c.fill = header_fill
-            for row_idx, r in enumerate(self._get_default_routes(), 2):
-                ws_routes.cell(row=row_idx, column=1).value = r['code']
-                ws_routes.cell(row=row_idx, column=2).value = r['commodity_ar']
-                ws_routes.cell(row=row_idx, column=3).value = r['origin']
-                ws_routes.cell(row=row_idx, column=4).value = r['origin_code']
-                ws_routes.cell(row=row_idx, column=5).value = r['destination']
-                ws_routes.cell(row=row_idx, column=6).value = r['destination_code']
-                ws_routes.cell(row=row_idx, column=7).value = r['duration_months']
-            for col, w in enumerate([12, 55, 12, 12, 18, 12, 10], 1):
-                ws_routes.column_dimensions[get_column_letter(col)].width = w
-            ws = wb.create_sheet(FLIGHT_PRICES_SHEET_NAME, 1)
-            wb.active = ws
+            ws = wb.active
+            ws.title = FLIGHT_PRICES_SHEET_NAME
             ws.sheet_view.rightToLeft = True
-            thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-            for col_idx, header in enumerate([
-                'Code', 'Commodity', 'الدرجة المقابلة لها في الخطوط (Class equivalent in airlines)',
-                'CPI-Flag', 'رمز المصدر (Source Code)', 'وكالات الخطوط (Flight Agencies)'
-            ], 1):
-                cell = ws.cell(row=1, column=col_idx)
+            row_after_routes = self._ensure_route_block(ws)
+            flight_header_row = row_after_routes + 1
+            for col_idx, header in enumerate(flight_headers, 1):
+                cell = ws.cell(row=flight_header_row, column=col_idx)
                 cell.value = header
                 cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+                cell.fill = header_fill
                 cell.alignment = Alignment(horizontal='center', vertical='center')
                 cell.border = thin_border
             max_col = 6
         
-        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         scheduled_dates = self._get_scheduled_dates_through_2026()
-        header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-        
+
         def _norm_date_header(val):
             if not val:
                 return None
@@ -1327,7 +1374,7 @@ class FlightPriceScraper:
                     return s
         existing_headers = {}
         for col in range(7, max_col + 1):
-            val = ws.cell(row=1, column=col).value
+            val = ws.cell(row=flight_header_row, column=col).value
             key = _norm_date_header(val)
             if key:
                 existing_headers[key] = col
@@ -1335,7 +1382,7 @@ class FlightPriceScraper:
         for header_text, _ in scheduled_dates:
             if header_text in existing_headers:
                 continue
-            cell = ws.cell(row=1, column=next_col)
+            cell = ws.cell(row=flight_header_row, column=next_col)
             cell.value = header_text
             cell.font = Font(bold=True)
             cell.fill = header_fill
@@ -1348,7 +1395,7 @@ class FlightPriceScraper:
         date_col = existing_headers.get(date_text)
         if date_col is None:
             date_col = max_col + 1
-            cell = ws.cell(row=1, column=date_col)
+            cell = ws.cell(row=flight_header_row, column=date_col)
             cell.value = date_text
             cell.font = Font(bold=True)
             cell.fill = header_fill
@@ -1356,12 +1403,12 @@ class FlightPriceScraper:
             cell.border = thin_border
             max_col = date_col
         for col in range(1, max_col + 1):
-            c = ws.cell(row=1, column=col)
+            c = ws.cell(row=flight_header_row, column=col)
             c.fill = header_fill
             c.font = Font(bold=True)
             c.border = thin_border
             c.alignment = Alignment(horizontal='center', vertical='center')
-        row = 2
+        row = flight_header_row + 1
         while ws.cell(row=row, column=1).value is not None:
             row += 1
         avg_fill = PatternFill(start_color='FFE4B5', end_color='FFE4B5', fill_type='solid')
