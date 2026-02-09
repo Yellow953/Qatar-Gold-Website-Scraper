@@ -90,14 +90,16 @@ class FlightPriceScraper:
     
     def _load_routes_from_excel(self) -> Optional[List[Dict]]:
         """Load routes from the top of the single Excel sheet (route block: row 1 = headers, rows 2+ = data until blank or flight header)."""
-        if not os.path.exists(self.excel_path):
+        path = os.path.abspath(self.excel_path)
+        if not os.path.exists(path):
+            print(f"  Excel file not found: {path}")
             return None
         try:
-            wb = load_workbook(self.excel_path, read_only=True, data_only=True)
-            if FLIGHT_PRICES_SHEET_NAME not in wb.sheetnames:
-                ws = wb.active  # fallback for old files with different sheet name
-            else:
+            wb = load_workbook(path, read_only=True, data_only=True)
+            if FLIGHT_PRICES_SHEET_NAME in wb.sheetnames:
                 ws = wb[FLIGHT_PRICES_SHEET_NAME]
+            else:
+                ws = wb.active
             routes = []
             # Route block: row 1 = headers (Code, Commodity, Origin, ...), rows 2+ = data. Stop at empty A or flight header row.
             first_cell = ws.cell(row=1, column=1).value
@@ -138,6 +140,7 @@ class FlightPriceScraper:
                     })
             if routes:
                 wb.close()
+                print(f"  Reading routes from Excel: {path}")
                 return routes
             if 'Routes' in wb.sheetnames:
                 ws_legacy = wb['Routes']
@@ -457,83 +460,155 @@ class FlightPriceScraper:
         return result
     
     def _get_current_run_date_header(self) -> str:
-        """Return the date header for this run: the scheduled date (4/10/17/24) that is >= today."""
-        scheduled = self._get_scheduled_dates_through_2026()
-        if not scheduled:
-            return datetime.now().strftime('%d-%b')
-        return scheduled[0][0]
+        """Return the date header for this run: use today's date so every run gets the next column (even if not 4/10/17/24)."""
+        return datetime.now().strftime('%d-%b')
+    
+    # Approximate exchange rates to QAR (Qatari Riyal) - update periodically if needed
+    CURRENCY_TO_QAR = {
+        'QAR': 1.0, 'QR': 1.0, 'ر.ق': 1.0,
+        'USD': 3.64, 'US$': 3.64, '$': 3.64,
+        'AED': 1.0, 'د.إ': 1.0, 'DH': 1.0,
+        'EUR': 3.90, '€': 3.90,
+        'GBP': 4.60, '£': 4.60,
+        'SAR': 0.97, 'SR': 0.97,
+        'BHD': 9.65, 'KWD': 11.85, 'OMR': 9.46,
+    }
+    
+    def _detect_currency_from_text(self, text: str) -> Tuple[Optional[float], str]:
+        """Extract numeric amount and detect currency from text (e.g. '1,049 USD', '$1,049', '3,594 AED').
+        Returns (amount, currency_code). currency_code is 'QAR' if unknown (assume already QAR)."""
+        if not text or not text.strip():
+            return None, 'QAR'
+        text_upper = text.upper().strip()
+        amount = None
+        detected = 'QAR'
+        # Currency patterns: symbol/code before or after number
+        patterns_currency = [
+            (r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(QAR|QR|USD|US\$|\$|AED|EUR|€|GBP|£|SAR|BHD|KWD|OMR)', 1, 2),
+            (r'(QAR|QR|USD|US\$|\$|AED|EUR|€|GBP|£|SAR|BHD|KWD|OMR)\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', 2, 1),
+            (r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', 1, 'USD'),
+            (r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*\$', 1, 'USD'),
+            (r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:AED|د\.إ)', 1, 'AED'),
+            (r'(?:AED|د\.إ)\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', 1, 'AED'),
+        ]
+        for pat, num_grp, cur_grp in patterns_currency:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                try:
+                    num_str = m.group(num_grp).replace(',', '')
+                    amount = float(num_str)
+                    cur = m.group(cur_grp) if isinstance(cur_grp, int) else cur_grp
+                    if cur in ('$', 'US$'):
+                        detected = 'USD'
+                    elif cur in ('€',):
+                        detected = 'EUR'
+                    elif cur in ('£',):
+                        detected = 'GBP'
+                    else:
+                        detected = (cur or 'QAR').strip().upper()
+                    if amount and amount > 0:
+                        return amount, detected
+                except (IndexError, ValueError, TypeError):
+                    pass
+        cleaned = re.sub(r'[^\d.,]', '', text)
+        cleaned = cleaned.replace(',', '')
+        try:
+            amount = float(cleaned)
+            if amount > 0:
+                return amount, 'QAR'
+        except ValueError:
+            pass
+        return None, 'QAR'
+    
+    def _convert_to_qar(self, amount: float, currency_code: str) -> float:
+        """Convert amount from given currency to QAR. Returns amount in QAR."""
+        if amount is None or amount <= 0:
+            return 0.0
+        code = (currency_code or 'QAR').strip().upper()
+        if code in ('$', 'US$'):
+            code = 'USD'
+        rate = self.CURRENCY_TO_QAR.get(code, 1.0)
+        return round(amount * rate, 0)
     
     def _extract_price_from_text(self, text: str) -> Optional[float]:
-        """Extract numeric price from text"""
-        try:
-            # Remove currency symbols and extract numbers
-            cleaned = re.sub(r'[^\d.,]', '', text)
-            cleaned = cleaned.replace(',', '')
-            price = float(cleaned)
-            return price if price > 0 else None
-        except:
-            return None
+        """Extract numeric price from text (legacy; use _detect_currency_from_text for currency)."""
+        am, _ = self._detect_currency_from_text(text)
+        return am
     
     def _extract_price_from_page(self, selectors: List[str], min_price: int = 500, max_price: int = 50000) -> Optional[float]:
-        """Extract price from page using multiple selectors.
-        min_price=500 to avoid capturing wrong values (baggage, taxes, etc.) from Kuwait/Malaysia/PIA pages.
-        International economy fares from Doha are typically 500+ QAR."""
-        price = None
+        """Extract price from page; detect currency (USD, AED, etc.) and convert to QAR.
+        Prefers round-trip/total price when multiple candidates. Returns price in QAR or None."""
+        candidates_with_currency = []
         
-        # Try each selector
         for selector in selectors:
             try:
                 price_elems = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                if price_elems:
-                    # Try the first few price elements
-                    for price_elem in price_elems[:10]:
-                        try:
-                            price_text = price_elem.text.strip()
-                            if price_text:
-                                extracted = self._extract_price_from_text(price_text)
-                                if extracted and min_price <= extracted <= max_price:
-                                    price = extracted
-                                    print(f"      ✓ Found price: {price} using selector: {selector[:50]}")
-                                    break
-                        except:
+                for price_elem in price_elems[:15]:
+                    try:
+                        price_text = (price_elem.text or '').strip()
+                        if not price_text:
                             continue
-                    if price:
-                        break
-            except:
+                        amount, currency = self._detect_currency_from_text(price_text)
+                        if not amount or amount <= 0:
+                            continue
+                        qar = self._convert_to_qar(amount, currency)
+                        if min_price <= qar <= max_price:
+                            is_total = any(k in price_text.lower() for k in ('total', 'round', 'return', 'round-trip', 'roundtrip', 'رحلة ذهاب وعودة'))
+                            candidates_with_currency.append((qar, is_total, amount, currency))
+                    except Exception:
+                        continue
+                if candidates_with_currency:
+                    break
+            except Exception:
                 continue
         
-        # If no price found, try searching page source
-        if not price:
-            try:
-                page_text = self.driver.page_source
-                # Prefer patterns that match typical fare amounts (4-6 digits); avoid small numbers
-                price_patterns = [
-                    r'QAR\s*(\d{1,3}(?:,\d{3})*)',  # QAR followed by number
-                    r'(\d{4,6})',   # 4-6 digit numbers (typical fare range, avoids 100/202/103)
-                    r'(\d{1,3}(?:,\d{3})+(?:\.\d{2})?)',  # Numbers with commas (e.g. 1,234.56)
-                    r'(\d{3,6})',   # 3-6 digit numbers (fallback)
-                ]
-                for pattern in price_patterns:
-                    matches = re.findall(pattern, page_text)
-                    if matches:
-                        # Sort candidates by value and pick first in valid range (prefer lower fare)
-                        candidates = []
-                        for match in matches[:30]:
-                            try:
-                                price_val = float(str(match).replace(',', ''))
-                                if min_price <= price_val <= max_price:
-                                    candidates.append(price_val)
-                            except:
-                                continue
-                        if candidates:
-                            # Use the smallest valid price (likely the main fare, not total with extras)
-                            price = min(candidates)
-                            print(f"      ✓ Extracted price from page source: {price}")
-                            break
-            except:
-                pass
+        if candidates_with_currency:
+            candidates_with_currency.sort(key=lambda x: (not x[1], x[0]))
+            best = candidates_with_currency[0]
+            qar_val = int(round(best[0]))
+            if best[3] != 'QAR':
+                print(f"      ✓ Found price: {best[2]} {best[3]} → {qar_val} QAR")
+            else:
+                print(f"      ✓ Found price: {qar_val} QAR")
+            return float(qar_val)
         
-        return price
+        page_text = ""
+        try:
+            page_text = self.driver.page_source
+        except Exception:
+            pass
+        
+        currency_patterns = [
+            (r'(?:QAR|QR)\s*(\d{1,3}(?:,\d{3})*)', 'QAR'),
+            (r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', 'USD'),
+            (r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*USD', 'USD'),
+            (r'(?:AED|د\.إ)\s*(\d{1,3}(?:,\d{3})*)', 'AED'),
+            (r'(\d{1,3}(?:,\d{3})*)\s*AED', 'AED'),
+            (r'(\d{4,6})', 'QAR'),
+            (r'(\d{1,3}(?:,\d{3})+(?:\.\d{2})?)', 'QAR'),
+        ]
+        all_candidates = []
+        for pattern, cur in currency_patterns:
+            matches = re.findall(pattern, page_text, re.IGNORECASE)
+            for match in list(matches)[:25]:
+                try:
+                    val = float(str(match).replace(',', ''))
+                    qar = self._convert_to_qar(val, cur)
+                    if min_price <= qar <= max_price:
+                        all_candidates.append((qar, val, cur))
+                except (ValueError, TypeError):
+                    continue
+        if all_candidates:
+            all_candidates.sort(key=lambda x: x[0], reverse=True)
+            qar, orig, cur = all_candidates[0]
+            qar_int = int(round(qar))
+            if cur != 'QAR':
+                print(f"      ✓ Extracted from page: {orig} {cur} → {qar_int} QAR (round-trip total)")
+            else:
+                print(f"      ✓ Extracted price from page source: {qar_int} QAR")
+            return float(qar_int)
+        
+        return None
     
     def scrape_qatar_airways(self, route: Dict) -> Optional[Dict]:
         """Scrape prices from Qatar Airways"""
@@ -1309,6 +1384,7 @@ class FlightPriceScraper:
     
     def _prepare_excel_for_export(self, filename: str):
         """Load or create workbook; single sheet with route block at top and flight prices below. Return (wb, ws, date_col, next_row, thin_border, avg_fill)."""
+        filename = os.path.abspath(filename or self.excel_path)
         thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
         flight_headers = [
@@ -1533,14 +1609,14 @@ class FlightPriceScraper:
     
     def append_route_to_excel(self, route_result: Dict, filename: str = None):
         """Append one route's data to the Excel file immediately (called after each route is scraped)."""
-        filename = filename or self.excel_path
+        filename = os.path.abspath(filename or self.excel_path)
         wb, ws, date_col, row, thin_border, avg_fill = self._prepare_excel_for_export(filename)
         row = self._write_route_to_sheet(ws, route_result, row, date_col, thin_border, avg_fill)
         wb.save(filename)
     
     def export_to_excel(self, results: Dict, filename: str = None):
         """Export all flight prices to Excel. If data was already written per-route, this can re-write or just save column widths."""
-        filename = filename or self.excel_path
+        filename = os.path.abspath(filename or self.excel_path)
         print(f"\n{'='*60}")
         print("EXPORTING TO EXCEL")
         print(f"{'='*60}")
