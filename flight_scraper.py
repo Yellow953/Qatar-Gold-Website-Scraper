@@ -40,6 +40,11 @@ has a different structure and may require specific implementation:
    - Routes are read from the top of the single sheet "Flight Prices" (route block: row 1 = headers, rows 2+ = data).
    - Columns: Code, Commodity, Origin, Origin_Code, Destination, Destination_Code, Duration_Months.
    - Add or delete rows in that block to change which routes are scraped.
+
+6. **Real prices vs skipped:**
+   - Real search URLs (so we can get real fares): Qatar Airways, British Airways, CheapAir, eDreams, KAYAK, ITA Matrix.
+   - Malaysia, Kuwait, Turkish, PIA: no direct search URL; we skip them (return no price) to avoid fake numbers from homepages.
+   - Min/max QAR caps filter out wrong elements (one-way, multi-pax, wrong currency).
 """
 
 try:
@@ -65,8 +70,6 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import os
-import requests
-from bs4 import BeautifulSoup
 
 
 # Excel file name and sheet names (single sheet: routes at top, flight prices below)
@@ -218,10 +221,10 @@ class FlightPriceScraper:
                 'origin_code': 'DOH',
                 'destination': 'Karachi',
                 'destination_code': 'KHI',
-                'commodity_ar': 'كلفة تذكرة دوحة_ كراتشي _ دوحة لمدة 3 اشهر ( التذكرة سياحية semi flexble)',
-                'commodity_en': 'Cost of a Doha - Karachi - Doha ticket for 3 (semi flexible tourist ticket) months',
+                'commodity_ar': 'كلفة تذكرة دوحة_ كراتشي _ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Karachi - Doha ticket for 6 (semi flexible tourist ticket) months',
                 'ticket_type': 'Semi flexible',
-                'duration_months': 3
+                'duration_months': 6
             },
             {
                 'code': '007331104',
@@ -251,10 +254,10 @@ class FlightPriceScraper:
                 'origin_code': 'DOH',
                 'destination': 'Mumbai',
                 'destination_code': 'BOM',
-                'commodity_ar': 'كلفة تذكرة دوحة_ بومباي _ دوحة لمدة 3 اشهر ( التذكرة سياحية semi flexble)',
-                'commodity_en': 'Cost of a Doha - Mumbai - Doha ticket for 3 (semi flexible tourist ticket) months',
+                'commodity_ar': 'كلفة تذكرة دوحة_ بومباي _ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)',
+                'commodity_en': 'Cost of a Doha - Mumbai - Doha ticket for 6 (semi flexible tourist ticket) months',
                 'ticket_type': 'Semi flexible',
-                'duration_months': 3
+                'duration_months': 6
             },
             {
                 'code': '007331107',
@@ -535,9 +538,40 @@ class FlightPriceScraper:
         am, _ = self._detect_currency_from_text(text)
         return am
     
-    def _extract_price_from_page(self, selectors: List[str], min_price: int = 500, max_price: int = 50000) -> Optional[float]:
+    # Long-haul destinations: use 1000 QAR min to filter one-way/wrong numbers but allow low fares. Short-haul stays 500.
+    LONG_HAUL_DESTINATION_CODES = {'LHR', 'LON', 'JFK', 'NYC', 'IST', 'BKK', 'KUL', 'TBS', 'FCO', 'CDG', 'MAD', 'FRA', 'MUC', 'AMS', 'SYD', 'MEL', 'SIN', 'HKG', 'NRT', 'TYO'}
+    
+    def _min_price_for_route(self, route: Optional[Dict]) -> int:
+        """Minimum plausible round-trip economy fare in QAR (avoids one-way or wrong numbers)."""
+        if not route:
+            return 500
+        dest = (route.get('destination_code') or '').upper()
+        if dest in self.LONG_HAUL_DESTINATION_CODES:
+            return 1000
+        return 500
+
+    # Plausible max round-trip economy in QAR (filters wrong page elements / totals for multiple pax).
+    MAX_QAR_LONG_HAUL = 15000
+    MAX_QAR_SHORT_HAUL = 8000
+
+    def _max_price_for_route(self, route: Optional[Dict]) -> int:
+        """Maximum plausible round-trip economy fare in QAR (rejects fake/wrong numbers from wrong pages)."""
+        if not route:
+            return 50000
+        dest = (route.get('destination_code') or '').upper()
+        if dest in self.LONG_HAUL_DESTINATION_CODES:
+            return self.MAX_QAR_LONG_HAUL
+        return self.MAX_QAR_SHORT_HAUL
+
+    def _extract_price_from_page(self, selectors: List[str], min_price: int = None, max_price: int = None, route: Dict = None) -> Optional[float]:
         """Extract price from page; detect currency (USD, AED, etc.) and convert to QAR.
-        Prefers round-trip/total price when multiple candidates. Returns price in QAR or None."""
+        Prefers round-trip/total price when multiple candidates. Uses route-aware min/max to avoid wrong fares. Returns price in QAR or None."""
+        if min_price is None:
+            min_price = self._min_price_for_route(route)
+        if max_price is None and route is not None:
+            max_price = self._max_price_for_route(route)
+        if max_price is None:
+            max_price = 50000
         candidates_with_currency = []
         
         for selector in selectors:
@@ -714,160 +748,40 @@ class FlightPriceScraper:
             return None
     
     def scrape_malaysia_airlines(self, route: Dict) -> Optional[Dict]:
-        """Scrape prices from Malaysia Airlines"""
+        """Scrape prices from Malaysia Airlines. No direct search URL – would need to automate search form; skipping to avoid fake prices."""
         try:
             print(f"    Scraping Malaysia Airlines for {route['origin']}-{route['destination']}")
-            dep_date, ret_date = self._calculate_dates(route['duration_months'])
-            
-            url = "https://www.malaysiaairlines.com/qa/en/home.html"
-            print(f"      Opening URL: {url}")
-            self.driver.get(url)
-            time.sleep(5)
-            
-            self._close_dialogs()
-            
-            # Malaysia Airlines requires form filling - would need to implement search form interaction
-            # For now, try to extract price if page has results
-            price = self._extract_price_from_page([
-                "[class*='price']",
-                "[class*='fare']",
-                "[data-testid*='price']",
-                ".price",
-                ".fare"
-            ])
-            
-            if price:
-                return {
-                    'route_code': route['code'],
-                    'source': 'Malaysia Airlines',
-                    'source_ar': 'الخطوط الماليزية',
-                    'source_code': 'AIRL024',
-                    'airline': 'Malaysia Airlines',
-                    'price': round(price),
-                    'currency': 'QAR',
-                    'timestamp': datetime.now().isoformat()
-                }
-            
+            print(f"      (Search not implemented – opening homepage would give wrong numbers; skipping)")
             return None
         except Exception as e:
             print(f"    Error scraping Malaysia Airlines: {e}")
             return None
     
     def scrape_kuwait_airways(self, route: Dict) -> Optional[Dict]:
-        """Scrape prices from Kuwait Airways"""
+        """Scrape prices from Kuwait Airways. No direct search URL – would need to automate search form; skipping to avoid fake prices."""
         try:
             print(f"    Scraping Kuwait Airways for {route['origin']}-{route['destination']}")
-            dep_date, ret_date = self._calculate_dates(route['duration_months'])
-            
-            url = "https://www.kuwaitairways.com/en"
-            print(f"      Opening URL: {url}")
-            self.driver.get(url)
-            time.sleep(5)
-            
-            self._close_dialogs()
-            
-            # Kuwait Airways requires form filling - would need to implement search form interaction
-            price = self._extract_price_from_page([
-                "[class*='price']",
-                "[class*='fare']",
-                "[data-testid*='price']",
-                ".price",
-                ".fare"
-            ])
-            
-            if price:
-                return {
-                    'route_code': route['code'],
-                    'source': 'Kuwait Airways',
-                    'source_ar': 'الخطوط الكويتية',
-                    'source_code': 'AIRL025',
-                    'airline': 'Kuwait Airways',
-                    'price': round(price),
-                    'currency': 'QAR',
-                    'timestamp': datetime.now().isoformat()
-                }
-            
+            print(f"      (Search not implemented – opening homepage would give wrong numbers; skipping)")
             return None
         except Exception as e:
             print(f"    Error scraping Kuwait Airways: {e}")
             return None
     
     def scrape_turkish_airlines(self, route: Dict) -> Optional[Dict]:
-        """Scrape prices from Turkish Airlines"""
+        """Scrape prices from Turkish Airlines. No direct search URL – would need to automate search form; skipping to avoid fake prices."""
         try:
             print(f"    Scraping Turkish Airlines for {route['origin']}-{route['destination']}")
-            dep_date, ret_date = self._calculate_dates(route['duration_months'])
-            
-            # Turkish Airlines uses a different URL structure - need to navigate to booking page first
-            url = "https://www.turkishairlines.com/en-qa/flights/booking/availability-international/"
-            
-            print(f"      Opening URL: {url}")
-            self.driver.get(url)
-            time.sleep(5)
-            
-            self._close_dialogs()
-            
-            # Would need to fill in search form - placeholder for now
-            # The URL structure requires session/booking ID which is generated dynamically
-            price = self._extract_price_from_page([
-                "[class*='price']",
-                "[class*='fare']",
-                "[data-testid*='price']",
-                ".price",
-                ".fare"
-            ])
-            
-            if price:
-                return {
-                    'route_code': route['code'],
-                    'source': 'Turkish Airlines',
-                    'source_ar': 'الخطوط التركية',
-                    'source_code': 'AIRL026',
-                    'airline': 'Turkish Airlines',
-                    'price': round(price),
-                    'currency': 'QAR',
-                    'timestamp': datetime.now().isoformat()
-                }
-            
+            print(f"      (Search not implemented – generic booking page would give wrong numbers; skipping)")
             return None
         except Exception as e:
             print(f"    Error scraping Turkish Airlines: {e}")
             return None
     
     def scrape_pia(self, route: Dict) -> Optional[Dict]:
-        """Scrape prices from Pakistan International Airlines"""
+        """Scrape prices from Pakistan International Airlines. No direct search URL – would need to automate search form; skipping to avoid fake prices."""
         try:
             print(f"    Scraping PIA for {route['origin']}-{route['destination']}")
-            dep_date, ret_date = self._calculate_dates(route['duration_months'])
-            
-            url = "https://www.piac.com.pk"
-            print(f"      Opening URL: {url}")
-            self.driver.get(url)
-            time.sleep(5)
-            
-            self._close_dialogs()
-            
-            # PIA requires form filling - would need to implement search form interaction
-            price = self._extract_price_from_page([
-                "[class*='price']",
-                "[class*='fare']",
-                "[data-testid*='price']",
-                ".price",
-                ".fare"
-            ])
-            
-            if price:
-                return {
-                    'route_code': route['code'],
-                    'source': 'Pakistan International Airlines',
-                    'source_ar': 'الخطوط الباكستانية',
-                    'source_code': 'AIRL020',
-                    'airline': 'PIA',
-                    'price': round(price),
-                    'currency': 'QAR',
-                    'timestamp': datetime.now().isoformat()
-                }
-            
+            print(f"      (Search not implemented – opening homepage would give wrong numbers; skipping)")
             return None
         except Exception as e:
             print(f"    Error scraping PIA: {e}")
@@ -944,7 +858,7 @@ class FlightPriceScraper:
                 "[data-test-id='result-price']",
                 "span[class*='price']",
                 "div[class*='price']"
-            ])
+            ], route=route)
             
             if price:
                 return {
@@ -1000,7 +914,7 @@ class FlightPriceScraper:
                 ".price",
                 ".fare",
                 "[class*='Price']"
-            ])
+            ], route=route)
             
             if price:
                 return {
@@ -1051,7 +965,7 @@ class FlightPriceScraper:
                 "[data-testid*='price']",
                 ".price",
                 ".fare"
-            ])
+            ], route=route)
             
             if price:
                 return {
@@ -1128,7 +1042,7 @@ class FlightPriceScraper:
                 "[data-testid*='price']",
                 ".price",
                 ".fare"
-            ])
+            ], route=route)
             
             if price:
                 return {
@@ -1488,7 +1402,45 @@ class FlightPriceScraper:
         while ws.cell(row=row, column=1).value is not None:
             row += 1
         avg_fill = PatternFill(start_color='FFE4B5', end_color='FFE4B5', fill_type='solid')
-        return (wb, ws, date_col, row, thin_border, avg_fill)
+        return (wb, ws, date_col, row, thin_border, avg_fill, flight_header_row)
+    
+    def _find_existing_rows_for_route(self, ws, flight_header_row: int, route_code: str) -> List[Tuple[int, str, str]]:
+        """Find existing data rows for this route. Returns list of (row_idx, col4_value, col5_value)."""
+        out = []
+        r = flight_header_row + 1
+        while r <= ws.max_row:
+            code = ws.cell(row=r, column=1).value
+            if not code or str(code).strip() != route_code:
+                break
+            out.append((r, str(ws.cell(row=r, column=4).value or ''), str(ws.cell(row=r, column=5).value or '')))
+            r += 1
+        return out
+    
+    def _update_route_date_column(self, ws, route_result: Dict, existing_rows: List[Tuple[int, str, str]], date_col: int) -> None:
+        """Fill the date column for existing rows of this route (same order as _write_route_to_sheet: prices then N-averages then Y-averages)."""
+        prices = route_result.get('prices', [])
+        sorted_prices = sorted(prices, key=lambda x: (x.get('airline', 'Various'), x.get('source', '')))
+        airline_avg_groups = {}
+        for price_data in prices:
+            airline = price_data.get('airline', 'Various')
+            if airline != 'Various':
+                if airline not in airline_avg_groups:
+                    airline_avg_groups[airline] = []
+                if price_data.get('price') and price_data.get('price') > 0:
+                    airline_avg_groups[airline].append(price_data.get('price'))
+        values = []
+        for price_data in sorted_prices:
+            values.append(price_data.get('price'))
+        for airline, price_list in airline_avg_groups.items():
+            if len(price_list) > 1:
+                values.append(round(sum(price_list) / len(price_list)))
+        all_valid = [p.get('price') for p in prices if p.get('price') and p.get('price') > 0]
+        if all_valid:
+            values.append(round(sum(all_valid) / len(all_valid)))
+        for i, (row_idx, _, _) in enumerate(existing_rows):
+            if i < len(values) and values[i] is not None:
+                ws.cell(row=row_idx, column=date_col).value = values[i]
+                ws.cell(row=row_idx, column=date_col).number_format = '0'
     
     def _write_route_to_sheet(self, ws, route_result: Dict, row: int, date_col: int, thin_border, avg_fill) -> int:
         """Write one route's data (prices + averages) to ws starting at row. Returns next row after this route."""
@@ -1607,11 +1559,34 @@ class FlightPriceScraper:
                 pass
         return row
     
+    def _expected_rows_count(self, route_result: Dict) -> int:
+        """Number of rows we would write for this route (sources + N-averages + Y-averages)."""
+        prices = route_result.get('prices', [])
+        sorted_prices = sorted(prices, key=lambda x: (x.get('airline', 'Various'), x.get('source', '')))
+        n = len(sorted_prices)
+        airline_avg_groups = {}
+        for p in prices:
+            airline = p.get('airline', 'Various')
+            if airline != 'Various' and p.get('price'):
+                airline_avg_groups.setdefault(airline, []).append(p.get('price'))
+        for price_list in airline_avg_groups.values():
+            if len(price_list) > 1:
+                n += 1
+        if any(p.get('price') for p in prices):
+            n += 1
+        return n
+
     def append_route_to_excel(self, route_result: Dict, filename: str = None):
-        """Append one route's data to the Excel file immediately (called after each route is scraped)."""
+        """Append one route's data to the Excel file immediately, or update the date column if rows already exist (so we keep only one block of ~121 rows)."""
         filename = os.path.abspath(filename or self.excel_path)
-        wb, ws, date_col, row, thin_border, avg_fill = self._prepare_excel_for_export(filename)
-        row = self._write_route_to_sheet(ws, route_result, row, date_col, thin_border, avg_fill)
+        wb, ws, date_col, row, thin_border, avg_fill, flight_header_row = self._prepare_excel_for_export(filename)
+        route_code = route_result['route']['code']
+        existing = self._find_existing_rows_for_route(ws, flight_header_row, route_code)
+        expected = self._expected_rows_count(route_result)
+        if len(existing) == expected and expected > 0:
+            self._update_route_date_column(ws, route_result, existing, date_col)
+        else:
+            row = self._write_route_to_sheet(ws, route_result, row, date_col, thin_border, avg_fill)
         wb.save(filename)
     
     def export_to_excel(self, results: Dict, filename: str = None):
@@ -1625,10 +1600,16 @@ class FlightPriceScraper:
             print(f"Error: Cannot export - {results['error']}")
             return False
         
-        wb, ws, date_col, row, thin_border, avg_fill = self._prepare_excel_for_export(filename)
+        wb, ws, date_col, row, thin_border, avg_fill, flight_header_row = self._prepare_excel_for_export(filename)
         initial_row = row
         for route_result in results.get('routes', []):
-            row = self._write_route_to_sheet(ws, route_result, row, date_col, thin_border, avg_fill)
+            route_code = route_result['route']['code']
+            existing = self._find_existing_rows_for_route(ws, flight_header_row, route_code)
+            expected = self._expected_rows_count(route_result)
+            if len(existing) == expected and expected > 0:
+                self._update_route_date_column(ws, route_result, existing, date_col)
+            else:
+                row = self._write_route_to_sheet(ws, route_result, row, date_col, thin_border, avg_fill)
         
         # Auto-adjust column widths
         ws.column_dimensions['A'].width = 12  # Code
@@ -1658,22 +1639,93 @@ class FlightPriceScraper:
             return False
 
 
+def create_fresh_excel(path: str = None) -> str:
+    """Create a fresh Excel file with route block and flight price headers (no data). Use to start over.
+    Returns the path saved. Backs up existing file if present."""
+    path = os.path.abspath(path or FLIGHT_PRICES_EXCEL)
+    if os.path.exists(path):
+        backup = path.replace('.xlsx', '_backup_%s.xlsx' % datetime.now().strftime('%Y%m%d_%H%M'))
+        try:
+            os.rename(path, backup)
+            print("Backed up existing file to %s" % backup)
+        except OSError:
+            os.remove(path)
+
+    scraper = FlightPriceScraper(headless=True)
+    routes = scraper._get_default_routes()
+    scheduled = scraper._get_scheduled_dates_through_2026()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = FLIGHT_PRICES_SHEET_NAME
+    ws.sheet_view.rightToLeft = True
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+    # Route block: row 1 headers, rows 2+ data
+    for col, h in enumerate(ROUTE_HEADERS, 1):
+        c = ws.cell(row=1, column=col)
+        c.value = h
+        c.font = Font(bold=True)
+        c.fill = header_fill
+    for row_idx, r in enumerate(routes, 2):
+        ws.cell(row=row_idx, column=1).value = r['code']
+        ws.cell(row=row_idx, column=2).value = r['commodity_ar']
+        ws.cell(row=row_idx, column=3).value = r['origin']
+        ws.cell(row=row_idx, column=4).value = r['origin_code']
+        ws.cell(row=row_idx, column=5).value = r['destination']
+        ws.cell(row=row_idx, column=6).value = r['destination_code']
+        ws.cell(row=row_idx, column=7).value = r['duration_months']
+
+    flight_header_row = len(routes) + 2  # blank row then header
+    flight_headers = [
+        'Code', 'Commodity', 'الدرجة المقابلة لها في الخطوط (Class equivalent in airlines)',
+        'CPI-Flag', 'رمز المصدر (Source Code)', 'وكالات الخطوط (Flight Agencies)'
+    ]
+    for col_idx, header in enumerate(flight_headers, 1):
+        cell = ws.cell(row=flight_header_row, column=col_idx)
+        cell.value = header
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = thin_border
+    for col, (header_text, _) in enumerate(scheduled, 7):
+        cell = ws.cell(row=flight_header_row, column=col)
+        cell.value = header_text
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = thin_border
+
+    ws.column_dimensions['A'].width = 12
+    ws.column_dimensions['B'].width = 60
+    ws.column_dimensions['C'].width = 25
+    ws.column_dimensions['D'].width = 12
+    ws.column_dimensions['E'].width = 15
+    ws.column_dimensions['F'].width = 35
+    for col in range(7, 7 + len(scheduled)):
+        ws.column_dimensions[get_column_letter(col)].width = 15
+
+    wb.save(path)
+    print("Created fresh Excel: %s" % path)
+    return path
+
+
 def main():
-    """Main function"""
+    """Main function. Use --fresh-excel to create a new empty Excel and exit."""
     import sys
-    
-    # Set headless=False to see the browser, True to run in background
+    if '--fresh-excel' in sys.argv or '-f' in sys.argv:
+        create_fresh_excel()
+        return
+
     scraper = FlightPriceScraper(headless=False)
-    
     results = scraper.scrape_all()
-    
-    # Save to JSON
+
     json_file = 'flight_prices.json'
     with open(json_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"\nPrices saved to {json_file}")
-    
-    # Export to Excel (uses scraper.excel_path; routes are read from sheet "Routes")
+    print("\nPrices saved to %s" % json_file)
+
     scraper.export_to_excel(results)
 
 
