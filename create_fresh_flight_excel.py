@@ -14,10 +14,10 @@ SCHEDULED_DAYS = (4, 10, 17, 24)
 DEFAULT_ROUTES = [
     {'code': '007331101', 'commodity_ar': 'كلفة تذكرة دوحة _ لندن - دوحة لمدة 6 (Semi flexble التذكرة السياحية) أشهر', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'London', 'destination_code': 'LHR', 'duration_months': 6},
     {'code': '007331102', 'commodity_ar': 'كلفة تذكرة دوحة _ القاهرة - دوحة لمدة 6 (semi flexble التذكرة سياحية ( اشهر', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Cairo', 'destination_code': 'CAI', 'duration_months': 6},
-    {'code': '007331103', 'commodity_ar': 'كلفة تذكرة دوحة_ كراتشي _ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Karachi', 'destination_code': 'KHI', 'duration_months': 6},
+    {'code': '007331103', 'commodity_ar': 'كلفة تذكرة دوحة_ كراتشي _ دوحة لمدة 3 اشهر ( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Karachi', 'destination_code': 'KHI', 'duration_months': 3},
     {'code': '007331104', 'commodity_ar': 'كلفة تذكرة دوحة_ دبي _ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Dubai', 'destination_code': 'DXB', 'duration_months': 6},
     {'code': '007331105', 'commodity_ar': 'كلفة تذكرة دوحة_جدة _ دوحة لمدة 6 اشهر( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Jeddah', 'destination_code': 'JED', 'duration_months': 6},
-    {'code': '007331106', 'commodity_ar': 'كلفة تذكرة دوحة_ بومباي _ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Mumbai', 'destination_code': 'BOM', 'duration_months': 6},
+    {'code': '007331106', 'commodity_ar': 'كلفة تذكرة دوحة_ بومباي _ دوحة لمدة 3 اشهر ( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Mumbai', 'destination_code': 'BOM', 'duration_months': 3},
     {'code': '007331107', 'commodity_ar': 'كلفة تذكرة دوحة_كولا لمبور _ دوحة لمدة 6 اشهر( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Kuala Lumpur', 'destination_code': 'KUL', 'duration_months': 6},
     {'code': '007331108', 'commodity_ar': 'كلفة تذكرة دوحة_ اسطنبول لمدة 6 اشهر ( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Istanbul', 'destination_code': 'IST', 'duration_months': 6},
     {'code': '007331109', 'commodity_ar': 'كلفة تذكرة دوحة_ بانكوك _ دوحة لمدة 6 اشهر ( التذكرة سياحية semi flexble)', 'origin': 'Doha', 'origin_code': 'DOH', 'destination': 'Bangkok', 'destination_code': 'BKK', 'duration_months': 6},
@@ -56,7 +56,7 @@ def main():
     wb = Workbook()
     ws = wb.active
     ws.title = FLIGHT_PRICES_SHEET_NAME
-    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.rightToLeft = False
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
     header_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
 
